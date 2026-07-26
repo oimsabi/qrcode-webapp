@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Code Generator &amp; Reader</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>QR Code Generator &amp; Reader</h1>
+    <p class="subtitle">สร้างและอ่าน QR Code ได้ในหน้าเดียว ทำงานบนเบราว์เซอร์ทั้งหมด ไม่ต้องมีเซิร์ฟเวอร์</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="generate">สร้าง QR Code</button>
+    <button class="tab-btn" data-tab="scan">อ่าน QR Code</button>
+  </nav>
+
+  <main>
+    <!-- Generate tab -->
+    <section id="generate" class="tab-panel active">
+      <div class="card">
+        <label for="qr-text">ข้อความหรือลิงก์</label>
+        <textarea id="qr-text" rows="3" placeholder="พิมพ์ข้อความ, URL, เบอร์โทร ฯลฯ"></textarea>
+
+        <div class="row">
+          <label for="qr-size">ขนาด</label>
+          <select id="qr-size">
+            <option value="200">200 x 200</option>
+            <option value="300" selected>300 x 300</option>
+            <option value="400">400 x 400</option>
+            <option value="512">512 x 512</option>
+          </select>
+
+          <label for="qr-ecl">ระดับแก้ไขข้อผิดพลาด</label>
+          <select id="qr-ecl">
+            <option value="L">L (ต่ำ)</option>
+            <option value="M" selected>M (ปานกลาง)</option>
+            <option value="Q">Q (สูง)</option>
+            <option value="H">H (สูงสุด)</option>
+          </select>
+        </div>
+
+        <button id="generate-btn" class="primary-btn">สร้าง QR Code</button>
+
+        <div id="qr-result" class="qr-result">
+          <canvas id="qr-canvas" hidden></canvas>
+          <button id="download-btn" class="secondary-btn" hidden>ดาวน์โหลด PNG</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scan tab -->
+    <section id="scan" class="tab-panel">
+      <div class="card">
+        <h2>สแกนจากกล้อง</h2>
+        <div class="row">
+          <button id="camera-start-btn" class="primary-btn">เปิดกล้อง</button>
+          <button id="camera-stop-btn" class="secondary-btn" hidden>ปิดกล้อง</button>
+        </div>
+        <div class="video-wrap">
+          <video id="video" playsinline hidden></video>
+          <canvas id="scan-canvas" hidden></canvas>
+        </div>
+
+        <h2>หรืออัปโหลดรูปภาพ</h2>
+        <input type="file" id="file-input" accept="image/*">
+
+        <div id="scan-result-box" class="result-box" hidden>
+          <h3>ผลลัพธ์ที่อ่านได้</h3>
+          <p id="scan-result-text"></p>
+          <button id="copy-result-btn" class="secondary-btn">คัดลอก</button>
+        </div>
+        <p id="scan-status" class="status"></p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>ทำงานฝั่งไคลเอนต์ทั้งหมด ไม่มีการส่งข้อมูลออกไปนอกเบราว์เซอร์</p>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
