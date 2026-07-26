@@ -1,6 +1,7 @@
 # QR Code Generator & Reader
 
 เว็บแอปสร้างและอ่าน QR Code ทำงานฝั่งไคลเอนต์ทั้งหมด ไม่ต้องมีเซิร์ฟเวอร์หรือฐานข้อมูล
+https://oimsabi.github.io/qrcode-webapp/
 
 ## ฟีเจอร์
 
