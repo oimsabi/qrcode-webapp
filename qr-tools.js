@@ -5,8 +5,9 @@
   else root.QRTools = tools;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
-  const LIMITS = Object.freeze({ bytes: 10 * 1024 * 1024, pixels: 24000000, dimension: 8192, scanEdge: 2000, logoEdge: 512 });
+  const LIMITS = Object.freeze({ bytes: 10 * 1024 * 1024, pixels: 24000000, dimension: 8192, scanEdge: 2000, logoEdge: 512, logoSourceEdge: 2000 });
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+  const LOGO_SHAPES = Object.freeze(['none', 'circle', 'square', 'diamond']);
   const LOGO_RATIOS = Object.freeze([0.30, 0.25, 0.20, 0.15, 0.13, 0.11, 0.09, 0.07]);
   const CAPTION = Object.freeze({ family: 'TH Sarabun New', maxLength: 1000, minSize: 8, maxSize: 96, gap: 8, bottom: 8 });
   const ECL_ORDER = Object.freeze(['H', 'Q', 'M', 'L']);
@@ -158,6 +159,51 @@
     const scale = Math.min(1, maxEdge / Math.max(width, height));
     return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)) };
   }
+  function normalizeLogoCrop(source, { shape = 'none', zoom = 1, centerX = 0.5, centerY = 0.5 } = {}) {
+    validateDimensions(source.width, source.height);
+    if (!LOGO_SHAPES.includes(shape) || ![zoom, centerX, centerY].every(Number.isFinite) || zoom < 1 || zoom > 5) {
+      throw new QrError('LOGO_CROP', 'ค่าการ Crop โลโก้ไม่ถูกต้อง');
+    }
+    const side = Math.min(source.width, source.height) / zoom;
+    const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+    centerX = clamp(centerX, side / (2 * source.width), 1 - side / (2 * source.width));
+    centerY = clamp(centerY, side / (2 * source.height), 1 - side / (2 * source.height));
+    return { shape, zoom, centerX, centerY, side,
+      x: clamp(centerX * source.width - side / 2, 0, source.width - side),
+      y: clamp(centerY * source.height - side / 2, 0, source.height - side) };
+  }
+  function traceLogoShape(ctx, shape, x, y, side) {
+    ctx.beginPath();
+    if (shape === 'circle') ctx.arc(x + side / 2, y + side / 2, side / 2, 0, Math.PI * 2);
+    else if (shape === 'diamond') {
+      ctx.moveTo(x + side / 2, y); ctx.lineTo(x + side, y + side / 2);
+      ctx.lineTo(x + side / 2, y + side); ctx.lineTo(x, y + side / 2); ctx.closePath();
+    } else ctx.rect(x, y, side, side);
+  }
+  function pointInLogoShape(shape, x, y) {
+    if (x < 0 || y < 0 || x > 1 || y > 1) return false;
+    const dx = (x - 0.5) * 2, dy = (y - 0.5) * 2;
+    return shape === 'circle' ? dx * dx + dy * dy <= 1 : shape === 'diamond' ? Math.abs(dx) + Math.abs(dy) <= 1 : true;
+  }
+  function cropLogoCanvas({ source, crop, createCanvas }) {
+    const state = normalizeLogoCrop(source, crop);
+    const fitted = state.shape === 'none' ? fitDimensions(source.width, source.height, LIMITS.logoEdge)
+      : { width: Math.max(1, Math.floor(Math.min(LIMITS.logoEdge, state.side))), height: Math.max(1, Math.floor(Math.min(LIMITS.logoEdge, state.side))) };
+    validateDimensions(fitted.width, fitted.height);
+    const canvas = createCanvas();
+    try {
+      canvas.width = fitted.width; canvas.height = fitted.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new QrError('LOGO_CROP', 'เบราว์เซอร์ไม่รองรับการ Crop โลโก้');
+      ctx.imageSmoothingQuality = 'high';
+      if (state.shape === 'none') ctx.drawImage(source, 0, 0, fitted.width, fitted.height);
+      else {
+        traceLogoShape(ctx, state.shape, 0, 0, canvas.width); ctx.clip();
+        ctx.drawImage(source, state.x, state.y, state.side, state.side, 0, 0, canvas.width, canvas.height);
+      }
+      return canvas;
+    } catch (error) { releaseCanvas(canvas); throw error; }
+  }
   async function validateImageHeader(file) {
     const bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
     const matches = (offset, signature) => signature.every((value, index) => bytes[offset + index] === value);
@@ -262,7 +308,7 @@
       }
     }
   }
-  function hasVisibleLogo(canvas, modules, scale, width, height) {
+  function hasVisibleLogo(canvas, modules, scale, width, height, shape) {
     const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
     const left = Math.max(0, Math.floor((canvas.width - width) / 2));
     const top = Math.max(0, Math.floor((canvas.height - height) / 2));
@@ -270,6 +316,8 @@
     const bottom = Math.min(canvas.height, Math.ceil((canvas.height + height) / 2));
     for (let y = top; y < bottom; y++) {
       for (let x = left; x < right; x++) {
+        if (shape !== 'none' && !pointInLogoShape(shape,
+          (x + 0.5 - (canvas.width - width) / 2) / width, (y + 0.5 - (canvas.height - height) / 2) / height)) continue;
         const row = Math.floor((y - 4 * scale) / scale);
         const col = Math.floor((x - 4 * scale) / scale);
         if (row < 0 || col < 0 || row >= modules.size || col >= modules.size || modules.isReserved(row, col)) continue;
@@ -281,8 +329,9 @@
     }
     return false;
   }
-  async function buildQr({ text, size, errorCorrectionLevel, logo, qr, decode, createCanvas, isCurrent = () => true }) {
+  async function buildQr({ text, size, errorCorrectionLevel, logo, logoShape = 'none', qr, decode, createCanvas, isCurrent = () => true }) {
     assertCurrent(isCurrent);
+    if (logo && !LOGO_SHAPES.includes(logoShape)) throw new QrError('LOGO_CROP', 'รูปทรงโลโก้ไม่ถูกต้อง');
     const ecl = logo ? 'H' : errorCorrectionLevel;
     const matrix = createQrMatrix(text, ecl, qr);
     const base = createCanvas();
@@ -316,11 +365,15 @@
         const w = logo.width * fit;
         const h = logo.height * fit;
         ctx.fillStyle = '#fff';
-        ctx.fillRect(Math.floor((base.width - box) / 2), Math.floor((base.height - box) / 2), box, box);
+        if (logoShape === 'none' || logoShape === 'square') {
+          ctx.fillRect(Math.floor((base.width - box) / 2), Math.floor((base.height - box) / 2), box, box);
+        } else {
+          traceLogoShape(ctx, logoShape, (base.width - box) / 2, (base.height - box) / 2, box); ctx.fill();
+        }
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(logo, (base.width - w) / 2, (base.height - h) / 2, w, h);
         restoreFunctionalModules(candidate, base, matrix.modules, size);
-        if (!hasVisibleLogo(candidate, matrix.modules, scale, w, h)) continue;
+        if (!hasVisibleLogo(candidate, matrix.modules, scale, w, h, logoShape)) continue;
         visibleTrials++;
         const result = readQr(candidate, decode);
         if (result && result.data === text) { releaseCanvas(base); return { canvas: candidate, logoRatio: ratio }; }
@@ -358,7 +411,8 @@
     }
     return null;
   }
-  return { LIMITS, LOGO_RATIOS, CAPTION, ECL_ORDER, QrError, utf8ByteLength, createQrMatrix, inspectQrCapacity, buildQrImage, findPlainAlternative,
+  return { LIMITS, LOGO_RATIOS, LOGO_SHAPES, normalizeLogoCrop, traceLogoShape, pointInLogoShape, cropLogoCanvas,
+    CAPTION, ECL_ORDER, QrError, utf8ByteLength, createQrMatrix, inspectQrCapacity, buildQrImage, findPlainAlternative,
     validateCaption, loadCaptionFont, layoutCaption, composeQrCaption,
     validateFile, validateDimensions, fitDimensions, validateImageHeader, loadImageCanvas, releaseCanvas,
     createCameraController, readQr, restoreFunctionalModules, buildQr };

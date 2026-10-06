@@ -29,10 +29,25 @@ const logoInput = document.getElementById('logo-input');
 const logoPreview = document.getElementById('logo-preview');
 const logoRemoveBtn = document.getElementById('logo-remove-btn');
 const logoEclHint = document.getElementById('logo-ecl-hint');
+const logoCropSection = document.getElementById('logo-crop-section');
+const logoShape = document.getElementById('logo-shape');
+const logoCropControls = document.getElementById('logo-crop-controls');
+const logoCropEditor = document.getElementById('logo-crop-editor');
+const logoZoom = document.getElementById('logo-zoom');
+const logoZoomValue = document.getElementById('logo-zoom-value');
+const logoPositionX = document.getElementById('logo-position-x');
+const logoPositionY = document.getElementById('logo-position-y');
+const logoCropReset = document.getElementById('logo-crop-reset');
+const logoCropError = document.getElementById('logo-crop-error');
 const qrCaption = document.getElementById('qr-caption');
 const captionSize = document.getElementById('caption-size');
 const captionColor = document.getElementById('caption-color');
 let logoCanvas = null;
+let logoSourceCanvas = null;
+let logoCrop = { shape: 'none', zoom: 1, centerX: 0.5, centerY: 0.5 };
+let cropFrameId = null;
+let cropDrag = null;
+let cropFailed = false;
 let logoLoading = false;
 let logoRequest = 0;
 let generation = 0;
@@ -74,7 +89,7 @@ function scheduleCapacityCheck() {
   const id = generation;
   capacityTimer = setTimeout(() => {
     capacityTimer = null;
-    if (id !== generation || generating || logoLoading) return;
+    if (id !== generation || generating || logoLoading || cropFrameId !== null) return;
     try { refreshCapacity(); }
     catch (error) { setGenerateStatus(error.message, 'error'); }
   }, 250);
@@ -85,9 +100,9 @@ function setGenerateStatus(message = '', kind = '') {
   generateStatus.className = 'status' + (kind ? ' ' + kind : '');
 }
 function syncGenerateControls() {
-  generateBtn.disabled = generating || logoLoading;
-  qrFixBtn.disabled = generating || logoLoading;
-  logoRemoveBtn.hidden = !logoCanvas && !logoLoading;
+  generateBtn.disabled = generating || logoLoading || cropFrameId !== null || cropFailed;
+  qrFixBtn.disabled = generateBtn.disabled;
+  logoRemoveBtn.hidden = !logoSourceCanvas && !logoCanvas && !logoLoading;
   qrEcl.disabled = !!logoCanvas;
   qrEcl.value = logoCanvas ? 'H' : preferredEcl;
   logoEclHint.hidden = !logoCanvas;
@@ -97,7 +112,11 @@ function invalidateGeneration(checkCapacity = true) {
   clearTimeout(capacityTimer);
   capacityTimer = null;
   showQrIssue();
-  logoInput.removeAttribute('aria-invalid');
+  if (!cropFailed) {
+    logoInput.removeAttribute('aria-invalid');
+    logoCropError.textContent = '';
+    logoCropError.hidden = true;
+  }
   downloadable = false;
   qrCanvas.hidden = true;
   downloadBtn.hidden = true;
@@ -106,11 +125,122 @@ function invalidateGeneration(checkCapacity = true) {
   if (checkCapacity) scheduleCapacityCheck();
 }
 function clearLogo() {
+  if (cropFrameId !== null) cancelAnimationFrame(cropFrameId);
+  cropFrameId = null;
+  endCropDrag();
   QRTools.releaseCanvas(logoCanvas);
+  QRTools.releaseCanvas(logoSourceCanvas);
   logoCanvas = null;
+  logoSourceCanvas = null;
+  logoCrop = { shape: 'none', zoom: 1, centerX: 0.5, centerY: 0.5 };
+  cropFailed = false;
+  logoShape.value = 'none';
+  logoCropSection.hidden = true;
+  logoCropControls.hidden = true;
+  logoCropError.textContent = '';
+  logoCropError.hidden = true;
+  QRTools.releaseCanvas(logoCropEditor);
   logoPreview.removeAttribute('src');
   logoPreview.hidden = true;
 }
+function syncLogoCropControls() {
+  logoShape.value = logoCrop.shape;
+  logoCropControls.hidden = logoCrop.shape === 'none';
+  logoZoom.value = logoCrop.zoom;
+  logoZoomValue.textContent = logoCrop.zoom.toFixed(2) + '×';
+  if (!logoSourceCanvas) return;
+  const state = QRTools.normalizeLogoCrop(logoSourceCanvas, logoCrop);
+  const rangeX = logoSourceCanvas.width - state.side, rangeY = logoSourceCanvas.height - state.side;
+  logoPositionX.value = rangeX > 0 ? state.x / rangeX * 100 : 50;
+  logoPositionY.value = rangeY > 0 ? state.y / rangeY * 100 : 50;
+  logoPositionX.disabled = rangeX <= 0;
+  logoPositionY.disabled = rangeY <= 0;
+}
+function renderLogoCrop() {
+  if (!logoSourceCanvas) return;
+  let next;
+  try {
+    logoCrop = QRTools.normalizeLogoCrop(logoSourceCanvas, logoCrop);
+    next = QRTools.cropLogoCanvas({ source: logoSourceCanvas, crop: logoCrop, createCanvas: () => document.createElement('canvas') });
+    const preview = next.toDataURL('image/png');
+    if (logoCrop.shape !== 'none') {
+      logoCropEditor.width = logoCropEditor.height = 256;
+      const ctx = logoCropEditor.getContext('2d');
+      if (!ctx) throw new Error('เบราว์เซอร์ไม่รองรับตัวอย่าง Crop');
+      ctx.drawImage(next, 0, 0, 256, 256);
+      QRTools.traceLogoShape(ctx, logoCrop.shape, 1, 1, 254);
+      ctx.strokeStyle = '#4f46e5'; ctx.lineWidth = 2; ctx.stroke();
+    }
+    QRTools.releaseCanvas(logoCanvas);
+    logoCanvas = next;
+    next = null;
+    logoPreview.src = preview;
+    logoPreview.hidden = false;
+    cropFailed = false;
+    logoInput.removeAttribute('aria-invalid');
+    logoCropError.textContent = '';
+    logoCropError.hidden = true;
+    syncLogoCropControls();
+  } catch (error) {
+    cropFailed = true;
+    logoCropError.textContent = 'Crop โลโก้ไม่สำเร็จ: ' + error.message;
+    logoCropError.hidden = false;
+    logoInput.setAttribute('aria-invalid', 'true');
+    setGenerateStatus(logoCropError.textContent, 'error');
+  } finally { QRTools.releaseCanvas(next); }
+}
+function changeLogoCrop(next) {
+  if (!logoSourceCanvas || logoLoading) return;
+  logoCrop = QRTools.normalizeLogoCrop(logoSourceCanvas, { ...logoCrop, ...next });
+  invalidateGeneration();
+  syncLogoCropControls();
+  if (cropFrameId === null) {
+    const request = logoRequest;
+    cropFrameId = requestAnimationFrame(() => {
+      cropFrameId = null;
+      if (request !== logoRequest || !logoSourceCanvas) return;
+      renderLogoCrop();
+      if (!cropFailed) setGenerateStatus('ปรับ Crop แล้ว กดสร้าง QR Code อีกครั้ง');
+      syncGenerateControls();
+      scheduleCapacityCheck();
+    });
+  }
+  syncGenerateControls();
+}
+logoShape.addEventListener('change', () => { endCropDrag(); changeLogoCrop({ shape: logoShape.value }); });
+logoZoom.addEventListener('input', () => changeLogoCrop({ zoom: Number(logoZoom.value) }));
+function positionLogoCrop(axis, value) {
+  if (!logoSourceCanvas) return;
+  const state = QRTools.normalizeLogoCrop(logoSourceCanvas, logoCrop);
+  const extent = axis === 'centerX' ? logoSourceCanvas.width : logoSourceCanvas.height;
+  changeLogoCrop({ [axis]: (state.side / 2 + (extent - state.side) * Number(value) / 100) / extent });
+}
+logoPositionX.addEventListener('input', () => positionLogoCrop('centerX', logoPositionX.value));
+logoPositionY.addEventListener('input', () => positionLogoCrop('centerY', logoPositionY.value));
+logoCropReset.addEventListener('click', () => { endCropDrag(); changeLogoCrop({ zoom: 1, centerX: 0.5, centerY: 0.5 }); });
+function endCropDrag(event) {
+  if (!cropDrag || (event && event.pointerId !== cropDrag.pointerId)) return;
+  const id = cropDrag.pointerId;
+  cropDrag = null;
+  if (logoCropEditor.hasPointerCapture(id)) logoCropEditor.releasePointerCapture(id);
+}
+logoCropEditor.addEventListener('pointerdown', event => {
+  if (!logoSourceCanvas || logoCrop.shape === 'none' || event.button !== 0 || event.isPrimary === false) return;
+  cropDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  logoCropEditor.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+logoCropEditor.addEventListener('pointermove', event => {
+  if (!cropDrag || event.pointerId !== cropDrag.pointerId || !logoSourceCanvas) return;
+  const rect = logoCropEditor.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const state = QRTools.normalizeLogoCrop(logoSourceCanvas, logoCrop);
+  const centerX = state.centerX - (event.clientX - cropDrag.x) * state.side / (rect.width * logoSourceCanvas.width);
+  const centerY = state.centerY - (event.clientY - cropDrag.y) * state.side / (rect.height * logoSourceCanvas.height);
+  cropDrag.x = event.clientX; cropDrag.y = event.clientY;
+  changeLogoCrop({ centerX, centerY });
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(event => logoCropEditor.addEventListener(event, endCropDrag));
 logoInput.addEventListener('change', async () => {
   const id = ++logoRequest;
   const file = logoInput.files[0];
@@ -121,11 +251,12 @@ logoInput.addEventListener('change', async () => {
   if (!file) return;
   setGenerateStatus('กำลังอ่านโลโก้...');
   try {
-    const canvas = await QRTools.loadImageCanvas(file, QRTools.LIMITS.logoEdge);
+    const canvas = await QRTools.loadImageCanvas(file, QRTools.LIMITS.logoSourceEdge);
     if (id !== logoRequest) { QRTools.releaseCanvas(canvas); return; }
-    logoCanvas = canvas;
-    logoPreview.src = canvas.toDataURL('image/png');
-    logoPreview.hidden = false;
+    logoSourceCanvas = canvas;
+    logoCropSection.hidden = false;
+    renderLogoCrop();
+    if (cropFailed) return;
     setGenerateStatus('เลือกโลโก้แล้ว กดสร้าง QR Code เพื่อจัดขนาดและตรวจการสแกน');
   } catch (error) {
     if (id !== logoRequest) return;
@@ -159,7 +290,7 @@ qrEcl.addEventListener('change', () => {
   invalidateGeneration();
 });
 async function generateQr() {
-  if (generating || logoLoading) return;
+  if (generating || logoLoading || cropFrameId !== null || cropFailed) return;
   const text = qrText.value.trim();
   invalidateGeneration(false);
   if (!text) { qrTextInfo.textContent = 'ข้อมูล QR: 0 ไบต์ (UTF-8)'; showQrIssue('กรุณาพิมพ์ข้อความหรือลิงก์'); qrText.focus(); return; }
@@ -177,7 +308,7 @@ async function generateQr() {
     if (!capacity.fits && !capacity.anyLevelFits) throw new QRTools.QrError('CAPACITY', capacityMessage(capacity));
     const caption = QRTools.validateCaption({ text: qrCaption.value, fontSize: Number(captionSize.value), color: captionColor.value });
     options = { text, size: parseInt(qrSize.value, 10), errorCorrectionLevel: qrEcl.value,
-      logo: logoCanvas, caption, qr: QRCode, decode: jsQR,
+      logo: logoCanvas, logoShape: logoCrop.shape, caption, qr: QRCode, decode: jsQR,
       createCanvas: () => document.createElement('canvas'), isCurrent: () => id === generation };
     await QRTools.loadCaptionFont(caption, document.fonts);
     if (id !== generation) return;
@@ -197,6 +328,8 @@ async function generateQr() {
     if (id !== generation) return;
     if (error.code === 'LOGO_INVISIBLE') {
       logoInput.setAttribute('aria-invalid', 'true');
+      logoCropError.textContent = error.message;
+      logoCropError.hidden = false;
       setGenerateStatus(error.message, 'error');
     } else if (['CAPACITY', 'LOGO_DECODE', 'PLAIN_DECODE'].includes(error.code)) {
       let message = error.code === 'CAPACITY' ? capacityMessage(capacity)

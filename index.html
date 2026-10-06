@@ -46,8 +46,29 @@
         </div>
 
         <label for="logo-input">โลโก้ตรงกลาง QR Code (ไม่จำเป็น)</label>
-        <input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp" aria-describedby="logo-help">
+        <input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp" aria-describedby="logo-help logo-crop-error">
         <p id="logo-help" class="help-text">PNG, JPEG หรือ WebP ไม่เกิน 10 MiB / 24 ล้านพิกเซล / 8,192 พิกเซลต่อด้าน กรอบโลโก้สูงสุด 30% ของด้านพื้นที่ QR ไม่รวมขอบว่าง ลดขนาดอัตโนมัติเมื่ออ่านไม่ผ่าน</p>
+        <div id="logo-crop-section" hidden>
+          <label for="logo-shape">รูปทรงโลโก้</label>
+          <select id="logo-shape">
+            <option value="none">ภาพเดิม (ไม่ Crop)</option>
+            <option value="circle">วงกลม</option>
+            <option value="square">สี่เหลี่ยมจัตุรัส</option>
+            <option value="diamond">รูปเพชร (กรอบหมุน 45°)</option>
+          </select>
+          <div id="logo-crop-controls" hidden>
+            <p id="logo-crop-help" class="help-text">ลากภาพด้วยเมาส์หรือนิ้วเพื่อเลือกส่วนที่ต้องการ หรือปรับตำแหน่งด้วยแถบเลื่อน พื้นขาวใน QR จะเป็นรูปทรงเดียวกับโลโก้</p>
+            <canvas id="logo-crop-editor" width="256" height="256" role="img" aria-label="ตัวอย่าง Crop โลโก้ ลากภาพเพื่อเลื่อนตำแหน่ง" aria-describedby="logo-crop-help"></canvas>
+            <label for="logo-zoom">ซูม <output id="logo-zoom-value" for="logo-zoom">1.00×</output></label>
+            <input id="logo-zoom" type="range" min="1" max="5" step="0.01" value="1">
+            <label for="logo-position-x">ตำแหน่งแนวนอน</label>
+            <input id="logo-position-x" type="range" min="0" max="100" step="0.1" value="50">
+            <label for="logo-position-y">ตำแหน่งแนวตั้ง</label>
+            <input id="logo-position-y" type="range" min="0" max="100" step="0.1" value="50">
+            <button id="logo-crop-reset" class="secondary-btn" type="button">รีเซ็ตตำแหน่ง</button>
+          </div>
+        </div>
+        <p id="logo-crop-error" class="field-error" role="status" aria-live="polite" hidden></p>
         <div class="logo-preview-wrap">
           <img id="logo-preview" alt="ตัวอย่างโลโก้ที่เลือก" hidden>
           <button id="logo-remove-btn" class="secondary-btn" type="button" hidden>นำโลโก้ออก</button>

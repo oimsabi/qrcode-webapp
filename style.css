@@ -161,6 +161,15 @@ textarea, select, input[type="file"], input[type="number"], input[type="color"] 
 .help-text { color: var(--muted); font-size: 0.85rem; line-height: 1.5; margin: 0.5rem 0; }
 .logo-preview-wrap { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
 #logo-preview { max-width: 96px; max-height: 96px; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+#logo-crop-editor {
+  display: block; width: 256px; max-width: 100%; height: auto; aspect-ratio: 1;
+  margin: 0.75rem auto; touch-action: none; cursor: grab; border-radius: 4px;
+  background: repeating-conic-gradient(#d1d5db 0% 25%, #fff 0% 50%) 0 / 16px 16px;
+}
+#logo-crop-editor:active { cursor: grabbing; }
+#logo-crop-controls input[type="range"] { display: block; width: 100%; min-height: 32px; accent-color: var(--primary); }
+#logo-crop-reset { margin-top: 0.5rem; }
+#logo-zoom-value { color: var(--text); }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
 [hidden] { display: none !important; }
 

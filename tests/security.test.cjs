@@ -220,12 +220,14 @@ function appEnv(overrides = {}) {
   const timers = new Map(); let timerId = 0;
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      id, value: ({ 'qr-text': overrides.initialText || '', 'qr-ecl': 'M', 'qr-size': '300', 'caption-size': '24', 'caption-color': '#000000' })[id] || '', hidden: true, disabled: false,
+      id, value: ({ 'qr-text': overrides.initialText || '', 'qr-ecl': 'M', 'qr-size': '300', 'caption-size': '24', 'caption-color': '#000000', 'logo-shape': 'none', 'logo-zoom': '1' })[id] || '', hidden: true, disabled: false,
       textContent: '', files: [], handlers: {}, dataset: {}, style: {}, classList: { add() {}, remove() {} },
       addEventListener(event, handler) { this.handlers[event] = handler; },
       setAttribute(name, value) { this[name] = value; },
       removeAttribute(name) { delete this[name]; }, focus() {}, pause() {}, play: async () => {},
-      readyState: 0, HAVE_ENOUGH_DATA: 4, getContext: () => ({ drawImage() {} }),
+      hasPointerCapture() { return false; }, releasePointerCapture() {}, setPointerCapture() {},
+      getBoundingClientRect: () => ({ width: 256, height: 256 }),
+      readyState: 0, HAVE_ENOUGH_DATA: 4, getContext: () => ({ drawImage() {}, beginPath() {}, arc() {}, rect() {}, moveTo() {}, lineTo() {}, closePath() {}, stroke() {} }),
       set innerHTML(value) { throw new Error('Unsafe HTML insertion'); }
     });
     return elements.get(id);
@@ -233,7 +235,12 @@ function appEnv(overrides = {}) {
   const tabs = ['generate', 'scan'].map(id => { const tab = element('tab-' + id); tab.dataset.tab = id; return tab; });
   const document = { hidden: false,
     querySelectorAll: selector => selector === '.tab-btn' ? tabs : ['generate', 'scan'].map(element),
-    getElementById: element, createElement: () => ({ getContext: () => ({ drawImage() {} }) }),
+    getElementById: element, createElement: () => {
+      const canvas = { toDataURL: () => canvas.preview || 'preview', getContext: () => ({
+        drawImage(source) { canvas.preview = source.toDataURL ? source.toDataURL() : 'preview'; },
+        beginPath() {}, arc() {}, rect() {}, moveTo() {}, lineTo() {}, closePath() {}, clip() {}
+      }) }; return canvas;
+    },
     addEventListener: (name, handler) => { documentEvents[name] = handler; }
   };
   const context = vm.createContext({ document, window: { addEventListener: (name, handler) => { windowEvents[name] = handler; } },
@@ -246,6 +253,7 @@ function appEnv(overrides = {}) {
   vm.runInContext(fs.readFileSync(require.resolve('../app.js'), 'utf8'), context);
   return { context, elements, document, documentEvents, windowEvents, frames, timers,
     runTimers: () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(timer => timer.handler()); },
+    runFrames: () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(handler => handler()); },
     clickTab: id => element('tab-' + id).handlers.click(), read: expr => vm.runInContext(expr, context) };
 }
 test('app: changing tabs while permission is pending releases the late track', async () => {
@@ -306,6 +314,68 @@ test('app: stale logo completion cannot overwrite the latest preview', async () 
   a.resolve(old); await first;
   assert.equal(old.width, 0); assert.equal(f.elements.get('logo-preview').src, 'latest');
   assert.equal(f.elements.get('qr-ecl').value, 'H');
+});
+
+test('app: crop changes coalesce into one frame, disable download immediately and remove releases source/output', async () => {
+  const source = { width: 1200, height: 800, toDataURL: () => 'source' }; let edge;
+  const f = appEnv({ tools: { loadImageCanvas: async (file, maxEdge) => { edge = maxEdge; return source; } } });
+  const input = f.elements.get('logo-input'); input.files = [{}]; await input.handlers.change();
+  assert.equal(edge, 2000); assert.equal(f.read('logoCrop.shape'), 'none');
+  assert.equal(f.read('logoCanvas.width'), 512); assert.equal(f.elements.get('logo-crop-controls').hidden, true);
+  const original = f.read('logoCanvas');
+  f.read('downloadable = true; downloadBtn.hidden = false;');
+  f.elements.get('logo-shape').value = 'circle'; f.elements.get('logo-shape').handlers.change();
+  for (const zoom of [2, 3, 4, 5]) { f.elements.get('logo-zoom').value = zoom; f.elements.get('logo-zoom').handlers.input(); }
+  assert.equal(f.frames.size, 1); assert.equal(f.elements.get('download-btn').hidden, true);
+  assert.equal(f.elements.get('generate-btn').disabled, true);
+  f.runFrames(); assert.equal(original.width, 0); assert.equal(f.read('logoCanvas.width'), 160);
+  assert.equal(f.elements.get('generate-btn').disabled, false);
+  const cropped = f.read('logoCanvas');
+  f.elements.get('logo-zoom').value = 2; f.elements.get('logo-zoom').handlers.input();
+  f.elements.get('logo-remove-btn').handlers.click();
+  assert.equal(f.frames.size, 0); assert.equal(source.width, 0); assert.equal(cropped.width, 0);
+  assert.equal(f.elements.get('logo-crop-section').hidden, true); assert.equal(f.elements.get('qr-ecl').value, 'M');
+});
+
+test('app: crop shapes preserve focus, zoom clamps edges, reset centers and new upload resets state', async () => {
+  const f = appEnv({ tools: { loadImageCanvas: async () => ({ width: 800, height: 400, toDataURL: () => 'source' }) } });
+  const input = f.elements.get('logo-input'); input.files = [{}]; await input.handlers.change();
+  const shape = f.elements.get('logo-shape'); shape.value = 'square'; shape.handlers.change(); f.runFrames();
+  f.elements.get('logo-zoom').value = 4; f.elements.get('logo-zoom').handlers.input();
+  f.elements.get('logo-position-x').value = 100; f.elements.get('logo-position-x').handlers.input();
+  f.elements.get('logo-position-y').value = 0; f.elements.get('logo-position-y').handlers.input(); f.runFrames();
+  const focus = f.read('[logoCrop.centerX, logoCrop.centerY, logoCrop.zoom]');
+  shape.value = 'diamond'; shape.handlers.change(); f.runFrames();
+  assert.deepEqual([...f.read('[logoCrop.centerX, logoCrop.centerY, logoCrop.zoom]')], [...focus]);
+  f.elements.get('logo-zoom').value = 1; f.elements.get('logo-zoom').handlers.input(); f.runFrames();
+  assert.equal(f.read('logoCrop.centerY'), 0.5);
+  f.elements.get('logo-crop-reset').handlers.click(); f.runFrames();
+  assert.deepEqual([...f.read('[logoCrop.centerX, logoCrop.centerY, logoCrop.zoom]')], [0.5, 0.5, 1]);
+  await input.handlers.change(); assert.equal(f.read('logoCrop.shape'), 'none');
+});
+
+test('app: editing crop during font load prevents stale QR publication', async () => {
+  const font = deferred(); let builds = 0;
+  const f = appEnv({ tools: { loadImageCanvas: async () => ({ width: 400, height: 400, toDataURL: () => 'source' }),
+    loadCaptionFont: () => font.promise, buildQrImage: async () => { builds++; return { canvas: {} }; } } });
+  f.elements.get('logo-input').files = [{}]; await f.elements.get('logo-input').handlers.change();
+  f.elements.get('qr-text').value = 'payload'; const pending = f.elements.get('generate-btn').handlers.click();
+  f.elements.get('logo-shape').value = 'diamond'; f.elements.get('logo-shape').handlers.change(); f.runFrames();
+  font.resolve(); await pending;
+  assert.equal(builds, 0); assert.equal(f.elements.get('download-btn').hidden, true);
+});
+
+test('app: crop rendering error remains visible while blocked and a new crop recovers', async () => {
+  let fail = true;
+  const f = appEnv({ tools: { loadImageCanvas: async () => ({ width: 400, height: 400, toDataURL: () => 'source' }),
+    cropLogoCanvas: options => { if (fail) throw Error('render failed'); return tools.cropLogoCanvas(options); } } });
+  f.elements.get('logo-input').files = [{}]; await f.elements.get('logo-input').handlers.change();
+  assert.equal(f.elements.get('generate-btn').disabled, true);
+  assert.equal(f.elements.get('logo-crop-error').hidden, false);
+  f.elements.get('qr-text').value = 'payload'; f.elements.get('qr-text').handlers.input();
+  assert.equal(f.elements.get('logo-crop-error').hidden, false);
+  fail = false; f.elements.get('logo-shape').value = 'square'; f.elements.get('logo-shape').handlers.change(); f.runFrames();
+  assert.equal(f.elements.get('logo-crop-error').hidden, true); assert.equal(f.elements.get('generate-btn').disabled, false);
 });
 
 test('app: editing caption during font loading cancels publication before QR rendering', async () => {
