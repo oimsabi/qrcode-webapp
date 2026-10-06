@@ -26,6 +26,9 @@ const logoInput = document.getElementById('logo-input');
 const logoPreview = document.getElementById('logo-preview');
 const logoRemoveBtn = document.getElementById('logo-remove-btn');
 const logoEclHint = document.getElementById('logo-ecl-hint');
+const qrCaption = document.getElementById('qr-caption');
+const captionSize = document.getElementById('caption-size');
+const captionColor = document.getElementById('caption-color');
 let logoCanvas = null;
 let logoLoading = false;
 let logoRequest = 0;
@@ -94,6 +97,13 @@ logoRemoveBtn.addEventListener('click', () => {
   setGenerateStatus('นำโลโก้ออกแล้ว กดสร้าง QR Code อีกครั้ง');
 });
 qrText.addEventListener('input', invalidateGeneration);
+qrCaption.addEventListener('input', invalidateGeneration);
+captionSize.addEventListener('input', () => {
+  const size = Number(captionSize.value);
+  if (Number.isInteger(size) && size >= 8 && size <= 96) qrCaption.style.fontSize = size + 'px';
+  invalidateGeneration();
+});
+captionColor.addEventListener('input', () => { qrCaption.style.color = captionColor.value; invalidateGeneration(); });
 qrSize.addEventListener('change', invalidateGeneration);
 qrEcl.addEventListener('change', () => {
   if (!logoCanvas) preferredEcl = qrEcl.value;
@@ -109,16 +119,23 @@ generateBtn.addEventListener('click', async () => {
   syncGenerateControls();
   setGenerateStatus('กำลังสร้างและตรวจอ่าน QR Code...');
   let result;
+  let composed;
   try {
+    const caption = QRTools.validateCaption({ text: qrCaption.value, fontSize: Number(captionSize.value), color: captionColor.value });
+    await QRTools.loadCaptionFont(caption, document.fonts);
+    if (id !== generation) return;
     result = await QRTools.buildQr({
       text, size: parseInt(qrSize.value, 10), errorCorrectionLevel: qrEcl.value,
       logo: logoCanvas, qr: QRCode, decode: jsQR,
       createCanvas: () => document.createElement('canvas'), isCurrent: () => id === generation
     });
     if (id !== generation) return;
-    qrCanvas.width = result.canvas.width;
-    qrCanvas.height = result.canvas.height;
-    qrCanvas.getContext('2d').drawImage(result.canvas, 0, 0);
+    composed = QRTools.composeQrCaption({ canvas: result.canvas, caption, createCanvas: () => document.createElement('canvas') });
+    const checked = QRTools.readQr(composed.canvas, jsQR);
+    if (!checked || checked.data !== text) throw new Error('ตรวจอ่านภาพรวมไม่ผ่าน กรุณาปรับข้อความใต้ภาพหรือเพิ่มขนาด QR');
+    qrCanvas.width = composed.canvas.width;
+    qrCanvas.height = composed.canvas.height;
+    qrCanvas.getContext('2d').drawImage(composed.canvas, 0, 0);
     qrCanvas.hidden = false;
     downloadable = true;
     downloadBtn.disabled = false;
@@ -128,6 +145,7 @@ generateBtn.addEventListener('click', async () => {
   } catch (error) {
     if (id === generation) setGenerateStatus('สร้าง QR Code ไม่สำเร็จ: ' + error.message, 'error');
   } finally {
+    if (composed) QRTools.releaseCanvas(composed.canvas);
     if (result) QRTools.releaseCanvas(result.canvas);
     generating = false;
     syncGenerateControls();

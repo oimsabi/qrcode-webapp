@@ -44,12 +44,26 @@
 
         <label for="logo-input">โลโก้ตรงกลาง QR Code (ไม่จำเป็น)</label>
         <input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp" aria-describedby="logo-help">
-        <p id="logo-help" class="help-text">PNG, JPEG หรือ WebP ไม่เกิน 10 MiB / 24 ล้านพิกเซล / 8,192 พิกเซลต่อด้าน จัดขนาดโลโก้ให้อัตโนมัติ</p>
+        <p id="logo-help" class="help-text">PNG, JPEG หรือ WebP ไม่เกิน 10 MiB / 24 ล้านพิกเซล / 8,192 พิกเซลต่อด้าน กรอบโลโก้สูงสุด 30% ของด้านพื้นที่ QR ไม่รวมขอบว่าง ลดขนาดอัตโนมัติเมื่ออ่านไม่ผ่าน</p>
         <div class="logo-preview-wrap">
           <img id="logo-preview" alt="ตัวอย่างโลโก้ที่เลือก" hidden>
           <button id="logo-remove-btn" class="secondary-btn" type="button" hidden>นำโลโก้ออก</button>
         </div>
         <p id="logo-ecl-hint" class="help-text" hidden>เมื่อมีโลโก้จะใช้ระดับ H และตรวจอ่านก่อนดาวน์โหลด ลายสำคัญของ QR อาจแสดงทับโลโก้เพื่อช่วยการสแกน</p>
+
+        <label for="qr-caption">ข้อความใต้ QR Code (ไม่จำเป็น)</label>
+        <textarea id="qr-caption" rows="3" maxlength="1000" placeholder="เช่น สแกนเพื่อดูรายละเอียด" aria-describedby="caption-help"></textarea>
+        <div class="caption-controls">
+          <div>
+            <label for="caption-size">ขนาดฟอนต์ (px)</label>
+            <input id="caption-size" type="number" min="8" max="96" step="1" value="24" inputmode="numeric">
+          </div>
+          <div>
+            <label for="caption-color">สีข้อความ</label>
+            <input id="caption-color" type="color" value="#000000">
+          </div>
+        </div>
+        <p id="caption-help" class="help-text">TH Sarabun New • ไม่เกิน 1,000 ตัวอักษร • ข้อความกว้างได้ 110% ของภาพ QR และขึ้นบรรทัดให้อัตโนมัติ กด Enter ได้ ระยะบรรทัดเท่ากับขนาดฟอนต์ ข้อความจะติดใน PNG โดยขนาด QR ยังเท่าเดิม</p>
         <button id="generate-btn" class="primary-btn">สร้าง QR Code</button>
         <p id="generate-status" class="status" role="status" aria-live="polite"></p>
 

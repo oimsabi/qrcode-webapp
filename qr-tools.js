@@ -7,7 +7,101 @@
   'use strict';
   const LIMITS = Object.freeze({ bytes: 10 * 1024 * 1024, pixels: 24000000, dimension: 8192, scanEdge: 2000, logoEdge: 512 });
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
-  const LOGO_RATIOS = Object.freeze([0.15, 0.13, 0.11, 0.09, 0.07]);
+  const LOGO_RATIOS = Object.freeze([0.30, 0.25, 0.20, 0.15, 0.13, 0.11, 0.09, 0.07]);
+  const CAPTION = Object.freeze({ family: 'TH Sarabun New', maxLength: 1000, minSize: 8, maxSize: 96, gap: 8, bottom: 8 });
+
+  function validateCaption({ text = '', fontSize = 24, color = '#000000' } = {}) {
+    if (typeof text !== 'string' || text.length > CAPTION.maxLength) throw new Error('ข้อความใต้ QR ต้องไม่เกิน 1,000 ตัวอักษร');
+    if (!Number.isInteger(fontSize) || fontSize < CAPTION.minSize || fontSize > CAPTION.maxSize) throw new Error('ขนาดฟอนต์ต้องเป็นจำนวนเต็มตั้งแต่ 8 ถึง 96 px');
+    if (typeof color !== 'string' || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('สีข้อความไม่ถูกต้อง');
+    return { text: text.replace(/\r\n?/g, '\n'), fontSize, color, hasText: !!text.trim() };
+  }
+  async function loadCaptionFont(options, fonts) {
+    const { hasText, fontSize } = validateCaption(options);
+    if (!hasText) return;
+    if (!fonts || !fonts.load || !fonts.check) throw new Error('เบราว์เซอร์ไม่รองรับการโหลดฟอนต์ข้อความใต้ QR');
+    const font = fontSize + 'px "' + CAPTION.family + '"';
+    let timer;
+    try {
+      const faces = await Promise.race([
+        fonts.load(font, 'กA'),
+        new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('โหลดฟอนต์ใช้เวลานานเกินไป')), 10000); })
+      ]);
+      if (!faces.length || !fonts.check(font, 'กA')) throw new Error('ไม่พบฟอนต์ TH Sarabun New');
+    } catch (error) { throw new Error('โหลดฟอนต์ TH Sarabun New ไม่สำเร็จ กรุณาลองใหม่: ' + error.message); }
+    finally { clearTimeout(timer); }
+  }
+  function measureCaption(ctx, text) {
+    const metrics = ctx.measureText(text);
+    const values = [metrics.width, metrics.actualBoundingBoxLeft, metrics.actualBoundingBoxRight,
+      metrics.actualBoundingBoxAscent, metrics.actualBoundingBoxDescent];
+    if (!values.every(Number.isFinite)) throw new Error('เบราว์เซอร์ไม่รองรับการวัดขอบเขตข้อความใต้ QR');
+    return { width: Math.max(metrics.width, metrics.actualBoundingBoxLeft + metrics.actualBoundingBoxRight),
+      left: metrics.actualBoundingBoxLeft, right: metrics.actualBoundingBoxRight,
+      ascent: metrics.actualBoundingBoxAscent, descent: metrics.actualBoundingBoxDescent };
+  }
+  function layoutCaption(ctx, text, fontSize, maxWidth, Segmenter = globalThis.Intl && Intl.Segmenter) {
+    if (typeof Segmenter !== 'function') throw new Error('เบราว์เซอร์ไม่รองรับการแบ่งข้อความใต้ QR กรุณาใช้เบราว์เซอร์รุ่นใหม่');
+    const words = new Segmenter('th', { granularity: 'word' });
+    const graphemes = new Segmenter('th', { granularity: 'grapheme' });
+    ctx.font = fontSize + 'px "' + CAPTION.family + '"';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    const lines = [];
+    for (const paragraph of text.split('\n')) {
+      let line = '';
+      for (const { segment } of words.segment(paragraph)) {
+        if (measureCaption(ctx, line + segment).width <= maxWidth) { line += segment; continue; }
+        if (line) { lines.push(line); line = ''; }
+        if (measureCaption(ctx, segment).width <= maxWidth) { line = segment; continue; }
+        for (const { segment: glyph } of graphemes.segment(segment)) {
+          if (measureCaption(ctx, glyph).width > maxWidth) throw new Error('ตัวอักษรกว้างเกินกรอบข้อความ กรุณาลดขนาดฟอนต์');
+          if (line && measureCaption(ctx, line + glyph).width > maxWidth) { lines.push(line); line = ''; }
+          line += glyph;
+        }
+      }
+      lines.push(line);
+    }
+    const measured = lines.map(line => ({ text: line, ...measureCaption(ctx, line) }));
+    const top = Math.min(...measured.map((line, i) => i * fontSize - line.ascent));
+    const bottom = Math.max(...measured.map((line, i) => i * fontSize + line.descent));
+    return { lines: measured, top, bottom, height: bottom - top, lineHeight: fontSize };
+  }
+  function composeQrCaption({ canvas, caption, createCanvas, Segmenter }) {
+    const options = validateCaption(caption);
+    const sourceCtx = canvas.getContext('2d');
+    if (!sourceCtx) throw new Error('ใช้ canvas ไม่ได้');
+    const maxWidth = canvas.width * 110 / 100;
+    const layout = options.hasText ? layoutCaption(sourceCtx, options.text, options.fontSize, maxWidth, Segmenter) : null;
+    const width = layout ? Math.ceil(maxWidth) : canvas.width;
+    const height = layout ? Math.ceil(canvas.height + CAPTION.gap + layout.height + CAPTION.bottom) : canvas.height;
+    // Determine and validate the entire layout before allocating the output bitmap.
+    validateDimensions(width, height);
+    const output = createCanvas();
+    try {
+      output.width = width;
+      output.height = height;
+      const ctx = output.getContext('2d');
+      if (!ctx) throw new Error('ใช้ canvas ไม่ได้');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      const qrX = Math.floor((width - canvas.width) / 2);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(canvas, qrX, 0);
+      if (layout) {
+        ctx.font = options.fontSize + 'px "' + CAPTION.family + '"';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = options.color;
+        const firstBaseline = canvas.height + CAPTION.gap - layout.top;
+        for (const [i, line] of layout.lines.entries()) {
+          // Center the ink, including italic-like glyph overhangs, rather than only advance width.
+          ctx.fillText(line.text, width / 2 + (line.left - line.right) / 2, firstBaseline + i * options.fontSize);
+        }
+      }
+      return { canvas: output, layout, qrX };
+    } catch (error) { releaseCanvas(output); throw error; }
+  }
 
   function validateFile(file) {
     if (!file || !IMAGE_TYPES.has(file.type)) throw new Error('รองรับเฉพาะไฟล์ PNG, JPEG และ WebP');
@@ -195,5 +289,7 @@
       throw new Error('QR หลังใส่โลโก้อ่านไม่ผ่าน หรือโลโก้ถูกลายสำคัญบัง กรุณาเพิ่มขนาด QR เปลี่ยนโลโก้ หรือลดความยาวข้อความ');
     } catch (error) { releaseCanvas(base); releaseCanvas(candidate); throw error; }
   }
-  return { LIMITS, LOGO_RATIOS, validateFile, validateDimensions, fitDimensions, validateImageHeader, loadImageCanvas, releaseCanvas, createCameraController, readQr, restoreFunctionalModules, buildQr };
+  return { LIMITS, LOGO_RATIOS, CAPTION, validateCaption, loadCaptionFont, layoutCaption, composeQrCaption,
+    validateFile, validateDimensions, fitDimensions, validateImageHeader, loadImageCanvas, releaseCanvas,
+    createCameraController, readQr, restoreFunctionalModules, buildQr };
 });

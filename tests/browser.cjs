@@ -26,7 +26,7 @@ const libraries = [
       if (pathname === '/favicon.ico') { response.writeHead(204); response.end(); return; }
       const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!file.startsWith(root + path.sep)) { response.writeHead(403); response.end(); return; }
-      const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+      const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.ttf': 'font/ttf' };
       response.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });
       response.end(await fs.readFile(file));
     } catch { if (!response.headersSent) response.writeHead(404); response.end(); }
@@ -119,11 +119,11 @@ const libraries = [
       let attempts = 0;
       const reduced = await QRTools.buildQr({ text: texts[0], size: 400, errorCorrectionLevel: 'M', logo: logos[0], qr: QRCode,
         decode: (...args) => ++attempts <= 2 ? null : jsQR(...args), createCanvas });
-      if (attempts !== 3 || reduced.logoRatio !== 0.11) throw new Error('Automatic reduction failed');
+      if (attempts !== 3 || reduced.logoRatio !== 0.20) throw new Error('Automatic reduction failed');
       QRTools.releaseCanvas(reduced.canvas);
       let erasedLogoRejected = false;
       try {
-        await QRTools.buildQr({ text: centralAlignmentText, size: 400, errorCorrectionLevel: 'M', logo: logos[0],
+        await QRTools.buildQr({ text: centralAlignmentText, size: 400, errorCorrectionLevel: 'M', logo: logo(100, 100, '#dc2626', 0.48),
           qr: QRCode, decode: jsQR, createCanvas });
       } catch (error) { erasedLogoRejected = /โลโก้ถูกลายสำคัญบัง/.test(error.message); }
       if (!erasedLogoRejected) throw new Error('Completely obscured logo should not be downloadable');
@@ -206,14 +206,16 @@ const libraries = [
     await page.evaluate(() => window.allowTestCamera(window.testStream));
     await page.waitForFunction(() => window.testStream.getTracks().every(track => track.readyState === 'ended'));
     assert.equal(await page.evaluate(() => document.getElementById('video').srcObject === null), true);
+    const captions = await require('./caption-browser.cjs')(context, page.url(), artifacts, logoBuffer);
     assert.deepEqual(errors, []);
     const report = { browser: await browser.version(), pixelChecks: pixelChecks.checks,
       realImageFormats: pixelChecks.realFormats,
-      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng,
+      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng, captions,
       ui: ['logo upload / force H / restore Q', 'PNG round-trip', 'mobile layout', 'changed input invalidates download',
         'all logo sizes rejected', 'uploaded PNG scan', 'corrupt image error', 'late real stream released after tab switch'], pageErrors: errors };
     await fs.writeFile(path.join(artifacts, 'browser-results.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ browser: report.browser, realQrCases: report.pixelChecks.length, uiChecks: report.ui.length,
+      captionCases: captions.pixelChecks.length, captionUiChecks: captions.ui.length,
       reductionAttempts: report.reductionAttempts, artifacts, pageErrors: errors }, null, 2));
   } finally {
     if (browser) await browser.close();

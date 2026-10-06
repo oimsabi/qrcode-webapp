@@ -179,7 +179,7 @@ test('logo: retries smaller sizes, forces H and returns the first verified resul
   let count = 0;
   const f = qrEnv(() => ++count === 3 ? { data: 'payload' } : null);
   const result = await tools.buildQr(f.options);
-  assert.equal(result.logoRatio, 0.11); assert.equal(count, 3);
+  assert.equal(result.logoRatio, 0.20); assert.equal(count, 3);
   assert.equal(f.renderOptions[0].margin, 4); assert.equal(f.renderOptions[0].errorCorrectionLevel, 'H');
   assert.equal(f.canvases[0].width, 0); assert.equal(result.canvas.width, 300);
 });
@@ -187,7 +187,16 @@ test('logo: a different decoded payload is rejected and all temporary canvases r
   let count = 0;
   const f = qrEnv(() => { count++; return { data: 'wrong' }; });
   await assert.rejects(tools.buildQr(f.options), /โลโก้อ่านไม่ผ่าน/);
-  assert.equal(count, 5); assert.ok(f.canvases.every(canvas => canvas.width === 0));
+  assert.equal(count, 8); assert.ok(f.canvases.every(canvas => canvas.width === 0));
+});
+
+test('logo: chooses the enlarged 30% frame when the largest trial decodes correctly', async () => {
+  let count = 0;
+  const f = qrEnv(() => { count++; return { data: 'payload' }; });
+  const result = await tools.buildQr(f.options);
+  assert.equal(result.logoRatio, 0.30); assert.equal(count, 1);
+  assert.equal(f.renderOptions[0].errorCorrectionLevel, 'H');
+  tools.releaseCanvas(result.canvas);
 });
 test('plain QR: preserves chosen ECL and requires an exact decode match', async () => {
   const f = qrEnv(() => ({ data: 'payload' })); f.options.logo = null;
@@ -210,8 +219,8 @@ function appEnv(overrides = {}) {
   let frameId = 0;
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      id, value: id === 'qr-ecl' ? 'M' : id === 'qr-size' ? '300' : '', hidden: true, disabled: false,
-      textContent: '', files: [], handlers: {}, dataset: {}, classList: { add() {}, remove() {} },
+      id, value: ({ 'qr-ecl': 'M', 'qr-size': '300', 'caption-size': '24', 'caption-color': '#000000' })[id] || '', hidden: true, disabled: false,
+      textContent: '', files: [], handlers: {}, dataset: {}, style: {}, classList: { add() {}, remove() {} },
       addEventListener(event, handler) { this.handlers[event] = handler; },
       removeAttribute(name) { delete this[name]; }, focus() {}, pause() {}, play: async () => {},
       readyState: 0, HAVE_ENOUGH_DATA: 4, getContext: () => ({ drawImage() {} }),
@@ -293,4 +302,52 @@ test('app: stale logo completion cannot overwrite the latest preview', async () 
   a.resolve(old); await first;
   assert.equal(old.width, 0); assert.equal(f.elements.get('logo-preview').src, 'latest');
   assert.equal(f.elements.get('qr-ecl').value, 'H');
+});
+
+test('app: editing caption during font loading cancels publication before QR rendering', async () => {
+  const font = deferred(); let renders = 0;
+  const f = appEnv({ tools: { loadCaptionFont: () => font.promise, buildQr: () => { renders++; } } });
+  f.elements.get('qr-text').value = 'https://example.com';
+  f.elements.get('qr-caption').value = 'ข้อความเก่า';
+  const pending = f.elements.get('generate-btn').handlers.click();
+  f.elements.get('qr-caption').value = 'ข้อความใหม่';
+  f.elements.get('qr-caption').handlers.input();
+  font.resolve(); await pending;
+  assert.equal(renders, 0);
+  assert.equal(f.elements.get('download-btn').hidden, true);
+  assert.equal(f.elements.get('generate-btn').disabled, false);
+});
+
+test('app: font loading failure reports an error without creating QR', async () => {
+  let renders = 0;
+  const f = appEnv({ tools: { loadCaptionFont: async () => { throw new Error('font failed'); }, buildQr: () => { renders++; } } });
+  f.elements.get('qr-text').value = 'test';
+  f.elements.get('qr-caption').value = 'caption';
+  await f.elements.get('generate-btn').handlers.click();
+  assert.equal(renders, 0);
+  assert.match(f.elements.get('generate-status').textContent, /font failed/);
+  assert.equal(f.elements.get('download-btn').hidden, true);
+});
+
+test('app: final decode failure releases temporary canvases and prevents download', async () => {
+  const base = { width: 300, height: 300 }, final = { width: 330, height: 350 };
+  const f = appEnv({ tools: { loadCaptionFont: async () => {}, buildQr: async () => ({ canvas: base }),
+    composeQrCaption: () => ({ canvas: final }), readQr: () => null } });
+  f.elements.get('qr-text').value = 'test';
+  await f.elements.get('generate-btn').handlers.click();
+  assert.equal(base.width, 0); assert.equal(final.width, 0);
+  assert.equal(f.elements.get('qr-canvas').hidden, true);
+  assert.equal(f.elements.get('download-btn').hidden, true);
+  assert.match(f.elements.get('generate-status').textContent, /ตรวจอ่านภาพรวมไม่ผ่าน/);
+});
+
+test('app: caption text, size and color changes invalidate a previously downloadable image', () => {
+  const f = appEnv();
+  for (const id of ['qr-caption', 'caption-size', 'caption-color']) {
+    f.read('downloadable = true; qrCanvas.hidden = false; downloadBtn.hidden = false; downloadBtn.disabled = false;');
+    f.elements.get(id).handlers.input();
+    assert.equal(f.read('downloadable'), false);
+    assert.equal(f.elements.get('download-btn').disabled, true);
+    assert.equal(f.elements.get('qr-canvas').hidden, true);
+  }
 });
