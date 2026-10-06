@@ -76,6 +76,9 @@ const libraries = [
               result = await QRTools.buildQr({ text, size, errorCorrectionLevel: 'M', logo: chosenLogo,
                 qr: QRCode, decode: jsQR, createCanvas });
             } catch (error) {
+              if (chosenLogo && centeredPattern && error.code === 'LOGO_LAYOUT') {
+                checks.push({ textIndex, size, version: matrix.version, logo: true, rejected: error.code }); continue;
+              }
               throw new Error(error.message + ' ' + JSON.stringify({ textIndex, size, version: matrix.version,
                 logo: chosenLogo && [chosenLogo.width, chosenLogo.height] }));
             }
@@ -125,7 +128,7 @@ const libraries = [
       try {
         await QRTools.buildQr({ text: centralAlignmentText, size: 400, errorCorrectionLevel: 'M', logo: logo(100, 100, '#dc2626', 0.48),
           qr: QRCode, decode: jsQR, createCanvas });
-      } catch (error) { erasedLogoRejected = /โลโก้ถูกลายสำคัญบัง/.test(error.message); }
+      } catch (error) { erasedLogoRejected = error.code === 'LOGO_LAYOUT'; }
       if (!erasedLogoRejected) throw new Error('Completely obscured logo should not be downloadable');
 
       const large = createCanvas(); large.width = 3000; large.height = 2000;
@@ -209,10 +212,11 @@ const libraries = [
     const captions = await require('./caption-browser.cjs')(context, page.url(), artifacts, logoBuffer);
     const validation = await require('./validation-browser.cjs')(context, page.url(), artifacts, logoBuffer);
     const crops = await require('./crop-browser.cjs')(context, page.url(), artifacts);
+    const layout = await require('./logo-layout-browser.cjs')(context, page.url(), artifacts, logoBuffer);
     assert.deepEqual(errors, []);
     const report = { browser: await browser.version(), pixelChecks: pixelChecks.checks,
       realImageFormats: pixelChecks.realFormats,
-      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng, captions, validation, crops,
+      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng, captions, validation, crops, layout,
       ui: ['logo upload / force H / restore Q', 'PNG round-trip', 'mobile layout', 'changed input invalidates download',
         'all logo sizes rejected', 'uploaded PNG scan', 'corrupt image error', 'late real stream released after tab switch'], pageErrors: errors };
     await fs.writeFile(path.join(artifacts, 'browser-results.json'), JSON.stringify(report, null, 2));
@@ -220,6 +224,7 @@ const libraries = [
       captionCases: captions.pixelChecks.length, captionUiChecks: captions.ui.length,
       capacityCases: validation.capacityCases.length, validationUiChecks: validation.ui.length,
       cropMaskCases: crops.maskChecks.length, cropQrCases: crops.qrChecks.length, cropUiChecks: crops.ui.length,
+      layoutCases: layout.checks.length, sampleCases: layout.sampleChecks.length, layoutUiChecks: layout.ui.length,
       reductionAttempts: report.reductionAttempts, artifacts, pageErrors: errors }, null, 2));
   } finally {
     if (browser) await browser.close();

@@ -60,7 +60,15 @@ module.exports = async function checkCrop(context, url, artifacts) {
         await new Promise((resolve, reject) => QRCode.toCanvas(base, text, { width: size, margin: 4,
           errorCorrectionLevel: 'H', version: matrix.version, maskPattern: matrix.maskPattern }, e => e ? reject(e) : resolve()));
         for (const withCaption of [false, true]) {
-          const result = await QRTools.buildQrImage({ ...options, caption: { text: withCaption ? 'ข้อความใต้ QR' : '', fontSize: 24, color: '#000000' } });
+          let result;
+          try { result = await QRTools.buildQrImage({ ...options, caption: { text: withCaption ? 'ข้อความใต้ QR' : '', fontSize: 24, color: '#000000' } }); }
+          catch (error) {
+            const center = Math.floor(matrix.modules.size / 2);
+            if (matrix.modules.isReserved(center, center) && error.code === 'LOGO_LAYOUT') {
+              qrChecks.push({ version: matrix.version, size, shape, withCaption, rejected: error.code }); continue;
+            }
+            throw error;
+          }
           if (QRTools.readQr(result.canvas, jsQR)?.data !== text) throw Error('Cropped QR decode mismatch');
           const qrX = Math.floor((result.canvas.width - base.width) / 2);
           const actual = result.canvas.getContext('2d').getImageData(qrX, 0, size, size).data;

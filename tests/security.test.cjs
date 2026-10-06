@@ -167,7 +167,7 @@ function qrEnv(decode) {
   const canvases = [], renderOptions = [];
   const createCanvas = () => {
     const canvas = { width: 300, height: 300, getContext: () => ({
-      drawImage() {}, fillRect() {}, getImageData: () => ({ data: new Uint8ClampedArray(canvas.width * canvas.height * 4).fill(100), width: canvas.width, height: canvas.height })
+      drawImage() {}, fillRect() {}, clearRect() {}, getImageData: () => ({ data: new Uint8ClampedArray(canvas.width * canvas.height * 4).fill(100), width: canvas.width, height: canvas.height })
     }) };
     canvases.push(canvas); return canvas;
   };
@@ -487,6 +487,44 @@ test('app: an invisible logo is marked on the file input rather than blaming tex
   await f.elements.get('generate-btn').handlers.click();
   assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false');
   assert.equal(f.elements.get('logo-input')['aria-invalid'], 'true');
+});
+
+test('app: logo layout failure offers verified manual removal without marking payload as invalid', async () => {
+  let builds = 0, alternativeCaption;
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { if (++builds === 1) throw new tools.QrError('LOGO_LAYOUT', 'โลโก้ตรงกลางชนลายสำคัญ'); return { canvas: { width: 300, height: 350 } }; },
+    findPlainAlternative: async options => { alternativeCaption = options.caption; return { level: 'M' }; } } });
+  f.elements.get('qr-text').value = 'payload'; f.elements.get('qr-caption').value = 'ข้อความใต้ภาพ';
+  f.read('logoCanvas = { width: 100, height: 100 }; syncGenerateControls();');
+  await f.elements.get('generate-btn').handlers.click();
+  assert.match(f.elements.get('logo-crop-error').textContent, /ชนลายสำคัญ.*แบบไม่มีโลโก้ระดับ M ตรวจอ่านผ่าน/);
+  assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false'); assert.equal(f.elements.get('logo-input')['aria-invalid'], 'true');
+  assert.equal(f.elements.get('qr-ecl').value, 'H'); assert.equal(f.read('!!logoCanvas'), true);
+  assert.equal(alternativeCaption.text, 'ข้อความใต้ภาพ'); assert.equal(f.elements.get('download-btn').hidden, true);
+  assert.match(f.elements.get('qr-fix-btn').textContent, /นำโลโก้ออกและใช้ระดับ M/);
+  await f.elements.get('qr-fix-btn').handlers.click();
+  assert.equal(f.read('logoCanvas'), null); assert.equal(f.elements.get('qr-ecl').value, 'M');
+  assert.equal(f.elements.get('download-btn').hidden, false); assert.equal(f.elements.get('logo-crop-error').hidden, true);
+});
+test('app: layout failure without a passing alternative cannot enable repair or download', async () => {
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('LOGO_LAYOUT', 'โลโก้ตรงกลางชนลายสำคัญ'); }, findPlainAlternative: async () => null } });
+  f.elements.get('qr-text').value = 'payload'; f.read('logoCanvas = {}; syncGenerateControls();');
+  await f.elements.get('generate-btn').handlers.click();
+  assert.match(f.elements.get('logo-crop-error').textContent, /ยังตรวจอ่านไม่ผ่าน/);
+  assert.equal(f.elements.get('qr-fix-btn').hidden, true); assert.equal(f.elements.get('download-btn').hidden, true);
+  assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false');
+});
+test('app: a stale layout diagnosis cannot restore a logo error or removal button', async () => {
+  const pending = deferred();
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('LOGO_LAYOUT', 'โลโก้ตรงกลางชนลายสำคัญ'); }, findPlainAlternative: () => pending.promise } });
+  f.elements.get('qr-text').value = 'old'; f.read('logoCanvas = {}; syncGenerateControls();');
+  const build = f.elements.get('generate-btn').handlers.click(); await flush();
+  f.elements.get('qr-text').value = 'new'; f.elements.get('qr-text').handlers.input();
+  pending.resolve({ level: 'M' }); await build;
+  assert.equal(f.elements.get('qr-fix-btn').hidden, true); assert.equal(f.elements.get('logo-crop-error').hidden, true);
+  assert.equal(f.elements.get('download-btn').hidden, true);
 });
 test('app: stale diagnosis cannot show a repair button or publish a result', async () => {
   const pending = deferred();

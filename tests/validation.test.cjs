@@ -31,7 +31,7 @@ test('capacity: unrelated encoding/library/settings errors are not called overfl
 function renderFixture(decode) {
   const canvases = [];
   const createCanvas = () => {
-    const canvas = { width: 300, height: 300, getContext: () => ({ drawImage() {}, fillRect() {},
+    const canvas = { width: 300, height: 300, getContext: () => ({ drawImage() {}, fillRect() {}, clearRect() {},
       getImageData: () => ({ data: new Uint8ClampedArray(300 * 300 * 4).fill(100), width: 300, height: 300 }) }) };
     canvases.push(canvas); return canvas;
   };

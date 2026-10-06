@@ -291,22 +291,50 @@
     const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
     return decode(pixels.data, pixels.width, pixels.height);
   }
-  function restoreFunctionalModules(target, base, modules, requestedSize) {
+  function reservedModuleRects(modules, width, height, requestedSize) {
     // Match node-qrcode 1.4.4's mapping, including fractional pixel scales.
     const margin = 4;
     const scale = requestedSize >= modules.size + margin * 2 ? requestedSize / (modules.size + margin * 2) : 4;
-    const ctx = target.getContext('2d');
-    ctx.imageSmoothingEnabled = false;
+    const rects = [];
     for (let row = 0; row < modules.size; row++) {
       for (let col = 0; col < modules.size; col++) {
         if (!modules.isReserved(row, col)) continue;
         const x = Math.ceil((col + margin) * scale);
         const y = Math.ceil((row + margin) * scale);
-        const right = Math.min(Math.ceil((col + margin + 1) * scale), Math.ceil(base.width - margin * scale));
-        const bottom = Math.min(Math.ceil((row + margin + 1) * scale), Math.ceil(base.height - margin * scale));
-        if (right > x && bottom > y) ctx.drawImage(base, x, y, right - x, bottom - y, x, y, right - x, bottom - y);
+        const right = Math.min(Math.ceil((col + margin + 1) * scale), Math.ceil(width - margin * scale));
+        const bottom = Math.min(Math.ceil((row + margin + 1) * scale), Math.ceil(height - margin * scale));
+        if (right > x && bottom > y) rects.push({ x, y, width: right - x, height: bottom - y });
       }
     }
+    return rects;
+  }
+  function restoreFunctionalModules(target, base, modules, requestedSize, rects = reservedModuleRects(modules, base.width, base.height, requestedSize)) {
+    const ctx = target.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    for (const { x, y, width, height } of rects) ctx.drawImage(base, x, y, width, height, x, y, width, height);
+  }
+  function logoPadding(box) { return Math.max(2, Math.floor(box * 0.08)) / 2; }
+  function drawLogoOverlay(ctx, logo, shape, width, height, box) {
+    const pad = logoPadding(box), inner = box - pad * 2;
+    const fit = Math.min(inner / logo.width, inner / logo.height);
+    const w = logo.width * fit, h = logo.height * fit;
+    ctx.fillStyle = '#fff';
+    if (shape === 'none' || shape === 'square') ctx.fillRect(Math.floor((width - box) / 2), Math.floor((height - box) / 2), box, box);
+    else { traceLogoShape(ctx, shape, (width - box) / 2, (height - box) / 2, box); ctx.fill(); }
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(logo, (width - w) / 2, (height - h) / 2, w, h);
+    return { w, h, pad };
+  }
+  function maskOverlapsReserved(mask, rects) {
+    const ctx = mask.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('ใช้ canvas ไม่ได้');
+    const pixels = ctx.getImageData(0, 0, mask.width, mask.height).data;
+    for (const { x, y, width, height } of rects) {
+      for (let py = y; py < y + height; py++) for (let px = x; px < x + width; px++) {
+        if (pixels[(py * mask.width + px) * 4 + 3] > 0) return true;
+      }
+    }
+    return false;
   }
   function hasVisibleLogo(canvas, modules, scale, width, height, shape) {
     const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
@@ -336,6 +364,7 @@
     const matrix = createQrMatrix(text, ecl, qr);
     const base = createCanvas();
     let candidate = null;
+    let mask = null;
     try {
       await new Promise((resolve, reject) => qr.toCanvas(base, text, {
         width: size, margin: 4, errorCorrectionLevel: ecl, version: matrix.version, maskPattern: matrix.maskPattern,
@@ -352,35 +381,34 @@
       candidate.height = base.height;
       const ctx = candidate.getContext('2d');
       if (!ctx) throw new Error('ใช้ canvas ไม่ได้');
+      mask = createCanvas(); mask.width = base.width; mask.height = base.height;
+      const maskCtx = mask.getContext('2d');
+      if (!maskCtx) throw new Error('ใช้ canvas ไม่ได้');
+      const reservedRects = reservedModuleRects(matrix.modules, base.width, base.height, size);
       const scale = size >= matrix.modules.size + 8 ? size / (matrix.modules.size + 8) : 4;
       const symbolWidth = matrix.modules.size * scale;
       let visibleTrials = 0;
+      let layoutTrials = 0;
       for (const ratio of LOGO_RATIOS) {
         assertCurrent(isCurrent);
-        ctx.drawImage(base, 0, 0);
         const box = Math.max(6, Math.floor(symbolWidth * ratio));
-        const pad = Math.max(2, Math.floor(box * 0.08));
-        const inner = box - pad * 2;
-        const fit = Math.min(inner / logo.width, inner / logo.height);
-        const w = logo.width * fit;
-        const h = logo.height * fit;
-        ctx.fillStyle = '#fff';
-        if (logoShape === 'none' || logoShape === 'square') {
-          ctx.fillRect(Math.floor((base.width - box) / 2), Math.floor((base.height - box) / 2), box, box);
-        } else {
-          traceLogoShape(ctx, logoShape, (base.width - box) / 2, (base.height - box) / 2, box); ctx.fill();
-        }
-        ctx.imageSmoothingEnabled = true;
-        ctx.drawImage(logo, (base.width - w) / 2, (base.height - h) / 2, w, h);
-        restoreFunctionalModules(candidate, base, matrix.modules, size);
+        maskCtx.clearRect(0, 0, mask.width, mask.height);
+        drawLogoOverlay(maskCtx, logo, logoShape, mask.width, mask.height, box);
+        if (maskOverlapsReserved(mask, reservedRects)) continue;
+        layoutTrials++;
+        ctx.drawImage(base, 0, 0);
+        const { w, h } = drawLogoOverlay(ctx, logo, logoShape, base.width, base.height, box);
+        restoreFunctionalModules(candidate, base, matrix.modules, size, reservedRects);
         if (!hasVisibleLogo(candidate, matrix.modules, scale, w, h, logoShape)) continue;
         visibleTrials++;
         const result = readQr(candidate, decode);
         if (result && result.data === text) { releaseCanvas(base); return { canvas: candidate, logoRatio: ratio }; }
       }
-      if (!visibleTrials) throw new QrError('LOGO_INVISIBLE', 'โลโก้ไม่มีส่วนที่มองเห็นบนพื้นขาว หรือโลโก้ถูกลายสำคัญบัง กรุณาเปลี่ยนโลโก้');
+      if (!layoutTrials) throw new QrError('LOGO_LAYOUT', 'โลโก้ตรงกลางชนลายสำคัญของ QR Code และไม่มีขนาดที่วางได้ กรุณานำโลโก้ออก');
+      if (!visibleTrials) throw new QrError('LOGO_INVISIBLE', 'โลโก้ไม่มีส่วนที่มองเห็นบนพื้นขาว กรุณาเปลี่ยนโลโก้หรือปรับ Crop');
       throw new QrError('LOGO_DECODE', 'QR หลังใส่โลโก้อ่านไม่ผ่าน กรุณาเพิ่มขนาด QR เปลี่ยนโลโก้ หรือลดความยาวข้อความ');
     } catch (error) { releaseCanvas(base); releaseCanvas(candidate); throw error; }
+    finally { releaseCanvas(mask); }
   }
   async function buildQrImage(options) {
     const isCurrent = options.isCurrent || (() => true);
@@ -415,5 +443,5 @@
     CAPTION, ECL_ORDER, QrError, utf8ByteLength, createQrMatrix, inspectQrCapacity, buildQrImage, findPlainAlternative,
     validateCaption, loadCaptionFont, layoutCaption, composeQrCaption,
     validateFile, validateDimensions, fitDimensions, validateImageHeader, loadImageCanvas, releaseCanvas,
-    createCameraController, readQr, restoreFunctionalModules, buildQr };
+    createCameraController, readQr, reservedModuleRects, logoPadding, drawLogoOverlay, maskOverlapsReserved, restoreFunctionalModules, buildQr };
 });

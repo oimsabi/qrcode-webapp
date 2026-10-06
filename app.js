@@ -61,6 +61,9 @@ function showQrIssue(message = '', action = null) {
   qrText.setAttribute('aria-invalid', message ? 'true' : 'false');
   qrTextError.textContent = message;
   qrTextError.hidden = !message;
+  setFixAction(action);
+}
+function setFixAction(action = null) {
   fixAction = action ? { ...action, revision: generation } : null;
   qrFixBtn.hidden = !action;
   qrFixBtn.textContent = action ? (action.verified ? '' : 'ลอง') +
@@ -331,6 +334,24 @@ async function generateQr() {
       logoCropError.textContent = error.message;
       logoCropError.hidden = false;
       setGenerateStatus(error.message, 'error');
+    } else if (error.code === 'LOGO_LAYOUT') {
+      let message = error.message;
+      logoInput.setAttribute('aria-invalid', 'true');
+      logoCropError.textContent = message;
+      logoCropError.hidden = false;
+      setGenerateStatus('กำลังตรวจทางเลือกแบบไม่มีโลโก้...');
+      try {
+        const alternative = await QRTools.findPlainAlternative(options, { preferredLevel });
+        if (id !== generation) return;
+        if (alternative) {
+          message += ' แบบไม่มีโลโก้ระดับ ' + alternative.level + ' ตรวจอ่านผ่าน';
+          setFixAction({ level: alternative.level, removeLogo: true, verified: true });
+        } else message += ' ภาพแบบไม่มีโลโก้ที่ทดลองยังตรวจอ่านไม่ผ่าน กรุณาเพิ่มขนาดภาพหรือลดข้อมูล';
+        logoCropError.textContent = message;
+        setGenerateStatus(message, 'error');
+      } catch (alternativeError) {
+        if (id === generation) setGenerateStatus('ตรวจทางเลือกไม่สำเร็จ: ' + alternativeError.message, 'error');
+      }
     } else if (['CAPACITY', 'LOGO_DECODE', 'PLAIN_DECODE'].includes(error.code)) {
       let message = error.code === 'CAPACITY' ? capacityMessage(capacity)
         : error.code === 'LOGO_DECODE' ? 'QR พร้อมโลโก้ที่เลือกตรวจอ่านไม่ผ่านที่ขนาดนี้'
