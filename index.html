@@ -42,11 +42,20 @@
           </select>
         </div>
 
+        <label for="logo-input">โลโก้ตรงกลาง QR Code (ไม่จำเป็น)</label>
+        <input type="file" id="logo-input" accept="image/png,image/jpeg,image/webp" aria-describedby="logo-help">
+        <p id="logo-help" class="help-text">PNG, JPEG หรือ WebP ไม่เกิน 10 MiB / 24 ล้านพิกเซล / 8,192 พิกเซลต่อด้าน จัดขนาดโลโก้ให้อัตโนมัติ</p>
+        <div class="logo-preview-wrap">
+          <img id="logo-preview" alt="ตัวอย่างโลโก้ที่เลือก" hidden>
+          <button id="logo-remove-btn" class="secondary-btn" type="button" hidden>นำโลโก้ออก</button>
+        </div>
+        <p id="logo-ecl-hint" class="help-text" hidden>เมื่อมีโลโก้จะใช้ระดับ H และตรวจอ่านก่อนดาวน์โหลด ลายสำคัญของ QR อาจแสดงทับโลโก้เพื่อช่วยการสแกน</p>
         <button id="generate-btn" class="primary-btn">สร้าง QR Code</button>
+        <p id="generate-status" class="status" role="status" aria-live="polite"></p>
 
         <div id="qr-result" class="qr-result">
           <canvas id="qr-canvas" hidden></canvas>
-          <button id="download-btn" class="secondary-btn" hidden>ดาวน์โหลด PNG</button>
+          <button id="download-btn" class="secondary-btn" hidden disabled>ดาวน์โหลด PNG</button>
         </div>
       </div>
     </section>
@@ -65,24 +74,26 @@
         </div>
 
         <h2>หรืออัปโหลดรูปภาพ</h2>
-        <input type="file" id="file-input" accept="image/*">
+        <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp" aria-describedby="scan-file-help">
+        <p id="scan-file-help" class="help-text">PNG, JPEG หรือ WebP ไม่เกิน 10 MiB / 24 ล้านพิกเซล / 8,192 พิกเซลต่อด้าน ย่อรูปก่อนสแกนให้ด้านยาวไม่เกิน 2,000 พิกเซล</p>
 
         <div id="scan-result-box" class="result-box" hidden>
           <h3>ผลลัพธ์ที่อ่านได้</h3>
           <p id="scan-result-text"></p>
           <button id="copy-result-btn" class="secondary-btn">คัดลอก</button>
         </div>
-        <p id="scan-status" class="status"></p>
+        <p id="scan-status" class="status" role="status" aria-live="polite"></p>
       </div>
     </section>
   </main>
 
   <footer>
-    <p>ทำงานฝั่งไคลเอนต์ทั้งหมด ไม่มีการส่งข้อมูลออกไปนอกเบราว์เซอร์</p>
+    <p>ข้อความ QR และภาพถูกประมวลผลในเบราว์เซอร์</p>
   </footer>
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="qr-tools.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
