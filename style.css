@@ -198,6 +198,12 @@ h2:first-child { margin-top: 0; }
 }
 .status.success { color: var(--success); }
 .status.error { color: var(--error); }
+.field-error { color: var(--error); font-size: 0.9rem; line-height: 1.5; margin: 0.5rem 0; overflow-wrap: anywhere; }
+[aria-invalid="true"] { border-color: var(--error); box-shadow: 0 0 0 1px var(--error); }
+#qr-fix-btn { margin-top: 0.4rem; white-space: normal; max-width: 100%; }
+@media (prefers-color-scheme: dark) {
+  :root { --error: #f87171; }
+}
 
 footer {
   text-align: center;

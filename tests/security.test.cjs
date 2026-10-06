@@ -217,11 +217,13 @@ test('generation: invalidated request cannot publish a rendered canvas', async (
 function appEnv(overrides = {}) {
   const elements = new Map(), documentEvents = {}, windowEvents = {}, frames = new Map();
   let frameId = 0;
+  const timers = new Map(); let timerId = 0;
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
-      id, value: ({ 'qr-ecl': 'M', 'qr-size': '300', 'caption-size': '24', 'caption-color': '#000000' })[id] || '', hidden: true, disabled: false,
+      id, value: ({ 'qr-text': overrides.initialText || '', 'qr-ecl': 'M', 'qr-size': '300', 'caption-size': '24', 'caption-color': '#000000' })[id] || '', hidden: true, disabled: false,
       textContent: '', files: [], handlers: {}, dataset: {}, style: {}, classList: { add() {}, remove() {} },
       addEventListener(event, handler) { this.handlers[event] = handler; },
+      setAttribute(name, value) { this[name] = value; },
       removeAttribute(name) { delete this[name]; }, focus() {}, pause() {}, play: async () => {},
       readyState: 0, HAVE_ENOUGH_DATA: 4, getContext: () => ({ drawImage() {} }),
       set innerHTML(value) { throw new Error('Unsafe HTML insertion'); }
@@ -236,12 +238,14 @@ function appEnv(overrides = {}) {
   };
   const context = vm.createContext({ document, window: { addEventListener: (name, handler) => { windowEvents[name] = handler; } },
     navigator: { mediaDevices: { getUserMedia: overrides.getUserMedia || (async () => stream()) } },
-    QRTools: { ...tools, ...overrides.tools }, QRCode: {}, jsQR: () => null, performance: { now: () => 1000 }, setTimeout,
+    QRTools: { ...tools, ...overrides.tools }, QRCode: overrides.qr || { create: () => ({ version: 1 }) }, jsQR: () => null, performance: { now: () => 1000 },
+    setTimeout: (handler, ms) => { timers.set(++timerId, { handler, ms }); return timerId; }, clearTimeout: id => timers.delete(id),
     requestAnimationFrame: handler => { frames.set(++frameId, handler); return frameId; },
     cancelAnimationFrame: id => frames.delete(id)
   });
   vm.runInContext(fs.readFileSync(require.resolve('../app.js'), 'utf8'), context);
-  return { context, elements, document, documentEvents, windowEvents, frames,
+  return { context, elements, document, documentEvents, windowEvents, frames, timers,
+    runTimers: () => { const pending = [...timers.values()]; timers.clear(); pending.forEach(timer => timer.handler()); },
     clickTab: id => element('tab-' + id).handlers.click(), read: expr => vm.runInContext(expr, context) };
 }
 test('app: changing tabs while permission is pending releases the late track', async () => {
@@ -329,16 +333,102 @@ test('app: font loading failure reports an error without creating QR', async () 
   assert.equal(f.elements.get('download-btn').hidden, true);
 });
 
-test('app: final decode failure releases temporary canvases and prevents download', async () => {
-  const base = { width: 300, height: 300 }, final = { width: 330, height: 350 };
-  const f = appEnv({ tools: { loadCaptionFont: async () => {}, buildQr: async () => ({ canvas: base }),
-    composeQrCaption: () => ({ canvas: final }), readQr: () => null } });
+test('app: final caption decode failure prevents download without blaming payload capacity', async () => {
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('FINAL_IMAGE_DECODE', 'ตรวจอ่านภาพรวมไม่ผ่าน'); } } });
   f.elements.get('qr-text').value = 'test';
   await f.elements.get('generate-btn').handlers.click();
-  assert.equal(base.width, 0); assert.equal(final.width, 0);
   assert.equal(f.elements.get('qr-canvas').hidden, true);
   assert.equal(f.elements.get('download-btn').hidden, true);
   assert.match(f.elements.get('generate-status').textContent, /ตรวจอ่านภาพรวมไม่ผ่าน/);
+  assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false');
+});
+
+test('app: byte counter trims payload and live capacity is debounced by 250ms', () => {
+  const f = appEnv();
+  const input = f.elements.get('qr-text'); input.value = ' ก😀 '; input.handlers.input();
+  assert.equal(f.timers.size, 1); assert.equal([...f.timers.values()][0].ms, 250);
+  input.value = ' ไทย '; input.handlers.input(); assert.equal(f.timers.size, 1);
+  f.runTimers();
+  assert.match(f.elements.get('qr-text-info').textContent, /9 ไบต์/);
+  assert.equal(input['aria-invalid'], 'false');
+});
+
+function capacityQr() {
+  return { create(text, { errorCorrectionLevel }) {
+    if (text.length > ({ H: 4, Q: 6, M: 8, L: 10 })[errorCorrectionLevel]) throw Error('The amount of data is too big to be stored in a QR Code');
+    return { version: 1 };
+  } };
+}
+test('app: unavailable QR generator still shows bytes and does not prevent camera initialization', async () => {
+  const f = appEnv({ initialText: ' ไทย😀 ', qr: {} });
+  assert.match(f.elements.get('qr-text-info').textContent, /13 ไบต์/);
+  assert.match(f.elements.get('generate-status').textContent, /เครื่องมือสร้าง QR/);
+  assert.notEqual(f.elements.get('qr-text')['aria-invalid'], 'true');
+  f.clickTab('scan'); await f.elements.get('camera-start-btn').handlers.click(); await flush();
+  assert.equal(f.frames.size, 1); f.elements.get('camera-stop-btn').handlers.click();
+});
+test('app: capacity overflow is red, offers an explicit lower level and clears after editing', () => {
+  const f = appEnv({ qr: capacityQr() });
+  f.elements.get('qr-ecl').value = 'H'; f.elements.get('qr-ecl').handlers.change();
+  const input = f.elements.get('qr-text'); input.value = 'abcde'; input.handlers.input(); f.runTimers();
+  assert.equal(input['aria-invalid'], 'true');
+  assert.match(f.elements.get('qr-text-error').textContent, /ระดับ H/);
+  assert.match(f.elements.get('qr-fix-btn').textContent, /ลองใช้ระดับ Q/);
+  assert.equal(f.elements.get('qr-ecl').value, 'H');
+  input.value = 'a'; input.handlers.input(); f.runTimers();
+  assert.equal(input['aria-invalid'], 'false'); assert.equal(f.elements.get('qr-fix-btn').hidden, true);
+});
+test('app: overflow at every level has no repair button and never renders', async () => {
+  let rendered = false;
+  const f = appEnv({ qr: capacityQr(), tools: { buildQrImage: async () => { rendered = true; } } });
+  f.elements.get('qr-text').value = 'a'.repeat(11);
+  await f.elements.get('generate-btn').handlers.click();
+  assert.equal(rendered, false); assert.equal(f.elements.get('qr-fix-btn').hidden, true);
+  assert.match(f.elements.get('qr-text-error').textContent, /ทุกระดับ/);
+});
+test('app: confirmed no-logo alternative keeps settings until repair is clicked and preserves caption', async () => {
+  let calls = 0, proposedCaption;
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { if (++calls === 1) throw new tools.QrError('LOGO_DECODE', 'failed'); return { canvas: { width: 300, height: 330 } }; },
+    findPlainAlternative: async options => { proposedCaption = options.caption; return { level: 'M' }; } } });
+  f.elements.get('qr-text').value = 'payload'; f.elements.get('qr-caption').value = 'คำใต้ภาพ';
+  f.read('logoCanvas = { width: 10, height: 10 }; syncGenerateControls();');
+  await f.elements.get('generate-btn').handlers.click();
+  assert.match(f.elements.get('qr-text-error').textContent, /แบบไม่มีโลโก้ระดับ M ตรวจอ่านผ่าน/);
+  assert.equal(f.elements.get('qr-ecl').value, 'H'); assert.equal(f.read('!!logoCanvas'), true);
+  assert.equal(proposedCaption.text, 'คำใต้ภาพ'); assert.equal(f.elements.get('download-btn').hidden, true);
+  await f.elements.get('qr-fix-btn').handlers.click();
+  assert.equal(f.read('logoCanvas'), null); assert.equal(f.elements.get('qr-ecl').value, 'M');
+  assert.equal(f.elements.get('download-btn').hidden, false); assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false');
+});
+test('app: no passing plain alternative does not claim a capacity failure or show repair', async () => {
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('PLAIN_DECODE', 'failed'); }, findPlainAlternative: async () => null } });
+  f.elements.get('qr-text').value = 'payload'; await f.elements.get('generate-btn').handlers.click();
+  assert.match(f.elements.get('qr-text-error').textContent, /ข้อมูลใส่ใน QR ได้/);
+  assert.doesNotMatch(f.elements.get('qr-text-error').textContent, /เกินความจุ/);
+  assert.equal(f.elements.get('qr-fix-btn').hidden, true);
+});
+test('app: an invisible logo is marked on the file input rather than blaming text', async () => {
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('LOGO_INVISIBLE', 'โลโก้ไม่มีส่วนที่มองเห็น'); } } });
+  f.elements.get('qr-text').value = 'payload'; f.read('logoCanvas = {}; syncGenerateControls();');
+  await f.elements.get('generate-btn').handlers.click();
+  assert.equal(f.elements.get('qr-text')['aria-invalid'], 'false');
+  assert.equal(f.elements.get('logo-input')['aria-invalid'], 'true');
+});
+test('app: stale diagnosis cannot show a repair button or publish a result', async () => {
+  const pending = deferred();
+  const f = appEnv({ tools: { loadCaptionFont: async () => {},
+    buildQrImage: async () => { throw new tools.QrError('LOGO_DECODE', 'failed'); }, findPlainAlternative: () => pending.promise } });
+  f.elements.get('qr-text').value = 'old'; f.read('logoCanvas = {}; syncGenerateControls();');
+  const generation = f.elements.get('generate-btn').handlers.click(); await flush();
+  f.elements.get('qr-text').value = 'new'; f.elements.get('qr-text').handlers.input();
+  f.runTimers(); // Debounce fires while the old diagnosis is still running.
+  pending.resolve({ level: 'M' }); await generation;
+  assert.equal(f.elements.get('qr-fix-btn').hidden, true); assert.equal(f.elements.get('download-btn').hidden, true);
+  f.runTimers(); assert.match(f.elements.get('qr-text-info').textContent, /3 ไบต์/);
 });
 
 test('app: caption text, size and color changes invalidate a previously downloadable image', () => {

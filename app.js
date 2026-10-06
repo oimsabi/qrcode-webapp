@@ -16,6 +16,9 @@ tabButtons.forEach(btn => {
 
 // ---------- Generate and optional logo ----------
 const qrText = document.getElementById('qr-text');
+const qrTextInfo = document.getElementById('qr-text-info');
+const qrTextError = document.getElementById('qr-text-error');
+const qrFixBtn = document.getElementById('qr-fix-btn');
 const qrSize = document.getElementById('qr-size');
 const qrEcl = document.getElementById('qr-ecl');
 const generateBtn = document.getElementById('generate-btn');
@@ -36,6 +39,46 @@ let generation = 0;
 let generating = false;
 let downloadable = false;
 let preferredEcl = qrEcl.value;
+let capacityTimer = null;
+let fixAction = null;
+
+function showQrIssue(message = '', action = null) {
+  qrText.setAttribute('aria-invalid', message ? 'true' : 'false');
+  qrTextError.textContent = message;
+  qrTextError.hidden = !message;
+  fixAction = action ? { ...action, revision: generation } : null;
+  qrFixBtn.hidden = !action;
+  qrFixBtn.textContent = action ? (action.verified ? '' : 'ลอง') +
+    (action.removeLogo ? 'นำโลโก้ออกและ' : '') + 'ใช้ระดับ ' + action.level + ' แล้วสร้างใหม่' : '';
+}
+function capacityMessage(info) {
+  if (!info.fits && !info.anyLevelFits) return 'ข้อมูลยาวเกินความจุ QR Code ทุกระดับ กรุณาลดข้อความหรือใช้ลิงก์สั้น';
+  const reason = 'ข้อมูลยาวเกินความจุระดับ ' + info.level + (logoCanvas ? ' ที่ต้องใช้กับโลโก้' : ' ที่เลือก');
+  const alternative = info.alternatives[0];
+  return reason + (alternative ? ' ระดับ ' + alternative.level + ' รองรับปริมาณข้อมูล แต่ยังต้องทดลองตรวจอ่าน' : ' กรุณาลดข้อความหรือเปลี่ยนระดับ');
+}
+function refreshCapacity() {
+  qrTextInfo.textContent = 'ข้อมูล QR: ' + QRTools.utf8ByteLength(qrText.value.trim()).toLocaleString('th-TH') + ' ไบต์ (UTF-8)';
+  const info = QRTools.inspectQrCapacity({ text: qrText.value, errorCorrectionLevel: qrEcl.value,
+    preferredLevel: preferredEcl, hasLogo: !!logoCanvas, qr: typeof QRCode === 'undefined' ? null : QRCode });
+  qrTextInfo.textContent = 'ข้อมูล QR: ' + info.bytes.toLocaleString('th-TH') + ' ไบต์ (UTF-8)' +
+    (info.fits ? ' • ระดับ ' + info.level + ' • QR version ' + info.version + ' • กดสร้างเพื่อตรวจอ่าน' : '');
+  if (!info.empty && !info.fits) {
+    const alternative = info.alternatives[0];
+    showQrIssue(capacityMessage(info), alternative ? { level: alternative.level, removeLogo: !!logoCanvas, verified: false } : null);
+  }
+  return info;
+}
+function scheduleCapacityCheck() {
+  clearTimeout(capacityTimer);
+  const id = generation;
+  capacityTimer = setTimeout(() => {
+    capacityTimer = null;
+    if (id !== generation || generating || logoLoading) return;
+    try { refreshCapacity(); }
+    catch (error) { setGenerateStatus(error.message, 'error'); }
+  }, 250);
+}
 
 function setGenerateStatus(message = '', kind = '') {
   generateStatus.textContent = message;
@@ -43,18 +86,24 @@ function setGenerateStatus(message = '', kind = '') {
 }
 function syncGenerateControls() {
   generateBtn.disabled = generating || logoLoading;
+  qrFixBtn.disabled = generating || logoLoading;
   logoRemoveBtn.hidden = !logoCanvas && !logoLoading;
   qrEcl.disabled = !!logoCanvas;
   qrEcl.value = logoCanvas ? 'H' : preferredEcl;
   logoEclHint.hidden = !logoCanvas;
 }
-function invalidateGeneration() {
+function invalidateGeneration(checkCapacity = true) {
   generation++;
+  clearTimeout(capacityTimer);
+  capacityTimer = null;
+  showQrIssue();
+  logoInput.removeAttribute('aria-invalid');
   downloadable = false;
   qrCanvas.hidden = true;
   downloadBtn.hidden = true;
   downloadBtn.disabled = true;
   setGenerateStatus();
+  if (checkCapacity) scheduleCapacityCheck();
 }
 function clearLogo() {
   QRTools.releaseCanvas(logoCanvas);
@@ -84,7 +133,7 @@ logoInput.addEventListener('change', async () => {
     logoInput.value = '';
     setGenerateStatus(error.message, 'error');
   } finally {
-    if (id === logoRequest) { logoLoading = false; syncGenerateControls(); }
+    if (id === logoRequest) { logoLoading = false; syncGenerateControls(); scheduleCapacityCheck(); }
   }
 });
 logoRemoveBtn.addEventListener('click', () => {
@@ -109,33 +158,35 @@ qrEcl.addEventListener('change', () => {
   if (!logoCanvas) preferredEcl = qrEcl.value;
   invalidateGeneration();
 });
-generateBtn.addEventListener('click', async () => {
+async function generateQr() {
   if (generating || logoLoading) return;
   const text = qrText.value.trim();
-  invalidateGeneration();
-  if (!text) { qrText.focus(); setGenerateStatus('กรุณาพิมพ์ข้อความหรือลิงก์', 'error'); return; }
+  invalidateGeneration(false);
+  if (!text) { qrTextInfo.textContent = 'ข้อมูล QR: 0 ไบต์ (UTF-8)'; showQrIssue('กรุณาพิมพ์ข้อความหรือลิงก์'); qrText.focus(); return; }
   const id = generation;
+  const hadLogo = !!logoCanvas;
+  const preferredLevel = preferredEcl;
   generating = true;
   syncGenerateControls();
   setGenerateStatus('กำลังสร้างและตรวจอ่าน QR Code...');
   let result;
-  let composed;
+  let capacity;
+  let options;
   try {
+    capacity = refreshCapacity();
+    if (!capacity.fits && !capacity.anyLevelFits) throw new QRTools.QrError('CAPACITY', capacityMessage(capacity));
     const caption = QRTools.validateCaption({ text: qrCaption.value, fontSize: Number(captionSize.value), color: captionColor.value });
+    options = { text, size: parseInt(qrSize.value, 10), errorCorrectionLevel: qrEcl.value,
+      logo: logoCanvas, caption, qr: QRCode, decode: jsQR,
+      createCanvas: () => document.createElement('canvas'), isCurrent: () => id === generation };
     await QRTools.loadCaptionFont(caption, document.fonts);
     if (id !== generation) return;
-    result = await QRTools.buildQr({
-      text, size: parseInt(qrSize.value, 10), errorCorrectionLevel: qrEcl.value,
-      logo: logoCanvas, qr: QRCode, decode: jsQR,
-      createCanvas: () => document.createElement('canvas'), isCurrent: () => id === generation
-    });
+    result = await QRTools.buildQrImage(options);
     if (id !== generation) return;
-    composed = QRTools.composeQrCaption({ canvas: result.canvas, caption, createCanvas: () => document.createElement('canvas') });
-    const checked = QRTools.readQr(composed.canvas, jsQR);
-    if (!checked || checked.data !== text) throw new Error('ตรวจอ่านภาพรวมไม่ผ่าน กรุณาปรับข้อความใต้ภาพหรือเพิ่มขนาด QR');
-    qrCanvas.width = composed.canvas.width;
-    qrCanvas.height = composed.canvas.height;
-    qrCanvas.getContext('2d').drawImage(composed.canvas, 0, 0);
+    showQrIssue();
+    qrCanvas.width = result.canvas.width;
+    qrCanvas.height = result.canvas.height;
+    qrCanvas.getContext('2d').drawImage(result.canvas, 0, 0);
     qrCanvas.hidden = false;
     downloadable = true;
     downloadBtn.disabled = false;
@@ -143,14 +194,60 @@ generateBtn.addEventListener('click', async () => {
     const suffix = result.logoRatio ? ' (กรอบโลโก้ ' + Math.round(result.logoRatio * 100) + '% ของด้าน QR)' : '';
     setGenerateStatus('สร้าง QR Code และตรวจอ่านสำเร็จ' + suffix, 'success');
   } catch (error) {
-    if (id === generation) setGenerateStatus('สร้าง QR Code ไม่สำเร็จ: ' + error.message, 'error');
+    if (id !== generation) return;
+    if (error.code === 'LOGO_INVISIBLE') {
+      logoInput.setAttribute('aria-invalid', 'true');
+      setGenerateStatus(error.message, 'error');
+    } else if (['CAPACITY', 'LOGO_DECODE', 'PLAIN_DECODE'].includes(error.code)) {
+      let message = error.code === 'CAPACITY' ? capacityMessage(capacity)
+        : error.code === 'LOGO_DECODE' ? 'QR พร้อมโลโก้ที่เลือกตรวจอ่านไม่ผ่านที่ขนาดนี้'
+          : 'ข้อมูลใส่ใน QR ได้ แต่ภาพที่ขนาดนี้ตรวจอ่านไม่ผ่าน กรุณาเพิ่มขนาดภาพหรือลดข้อมูล';
+      showQrIssue(message);
+      if (options && (capacity.fits || capacity.anyLevelFits)) {
+        setGenerateStatus('กำลังตรวจทางเลือกแบบไม่มีโลโก้...');
+        try {
+          const alternative = await QRTools.findPlainAlternative(options, { preferredLevel,
+            skipLevels: hadLogo ? [] : [options.errorCorrectionLevel] });
+          if (id !== generation) return;
+          if (alternative) {
+            message = (error.code === 'CAPACITY' ? 'ข้อมูลยาวเกินความจุระดับ ' + capacity.level + (hadLogo ? ' ที่ต้องใช้กับโลโก้' : ' ที่เลือก')
+              : hadLogo ? 'QR พร้อมโลโก้ที่เลือกตรวจอ่านไม่ผ่านที่ขนาดนี้' : 'ภาพระดับ ' + options.errorCorrectionLevel + ' ตรวจอ่านไม่ผ่านที่ขนาดนี้') +
+              ' แต่แบบไม่มีโลโก้ระดับ ' + alternative.level + ' ตรวจอ่านผ่าน';
+            showQrIssue(message, { level: alternative.level, removeLogo: hadLogo, verified: true });
+          } else {
+            message += ' ตัวเลือกแบบไม่มีโลโก้ที่ทดลองยังไม่ผ่าน กรุณาเพิ่มขนาดภาพหรือลดข้อมูล';
+            showQrIssue(message);
+          }
+        } catch (alternativeError) {
+          if (id === generation) setGenerateStatus('ตรวจทางเลือกไม่สำเร็จ: ' + alternativeError.message, 'error');
+          return;
+        }
+      }
+      setGenerateStatus(message, 'error');
+    } else setGenerateStatus('สร้าง QR Code ไม่สำเร็จ: ' + error.message, 'error');
   } finally {
-    if (composed) QRTools.releaseCanvas(composed.canvas);
     if (result) QRTools.releaseCanvas(result.canvas);
     generating = false;
     syncGenerateControls();
+    if (id !== generation) scheduleCapacityCheck();
   }
+}
+generateBtn.addEventListener('click', generateQr);
+qrFixBtn.addEventListener('click', async () => {
+  const action = fixAction;
+  if (!action || action.revision !== generation || generating || logoLoading) return;
+  if (action.removeLogo) {
+    logoRequest++;
+    logoLoading = false;
+    logoInput.value = '';
+    clearLogo();
+  }
+  preferredEcl = action.level;
+  syncGenerateControls();
+  await generateQr();
 });
+try { refreshCapacity(); }
+catch (error) { setGenerateStatus(error.message, 'error'); }
 downloadBtn.addEventListener('click', () => {
   if (!downloadable) return;
   try {

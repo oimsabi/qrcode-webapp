@@ -207,15 +207,17 @@ const libraries = [
     await page.waitForFunction(() => window.testStream.getTracks().every(track => track.readyState === 'ended'));
     assert.equal(await page.evaluate(() => document.getElementById('video').srcObject === null), true);
     const captions = await require('./caption-browser.cjs')(context, page.url(), artifacts, logoBuffer);
+    const validation = await require('./validation-browser.cjs')(context, page.url(), artifacts, logoBuffer);
     assert.deepEqual(errors, []);
     const report = { browser: await browser.version(), pixelChecks: pixelChecks.checks,
       realImageFormats: pixelChecks.realFormats,
-      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng, captions,
+      reductionAttempts: pixelChecks.reductionAttempts, downloadedPayload: decodedPng, captions, validation,
       ui: ['logo upload / force H / restore Q', 'PNG round-trip', 'mobile layout', 'changed input invalidates download',
         'all logo sizes rejected', 'uploaded PNG scan', 'corrupt image error', 'late real stream released after tab switch'], pageErrors: errors };
     await fs.writeFile(path.join(artifacts, 'browser-results.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ browser: report.browser, realQrCases: report.pixelChecks.length, uiChecks: report.ui.length,
       captionCases: captions.pixelChecks.length, captionUiChecks: captions.ui.length,
+      capacityCases: validation.capacityCases.length, validationUiChecks: validation.ui.length,
       reductionAttempts: report.reductionAttempts, artifacts, pageErrors: errors }, null, 2));
   } finally {
     if (browser) await browser.close();

@@ -22,7 +22,10 @@
     <section id="generate" class="tab-panel active">
       <div class="card">
         <label for="qr-text">ข้อความหรือลิงก์</label>
-        <textarea id="qr-text" rows="3" placeholder="พิมพ์ข้อความ, URL, เบอร์โทร ฯลฯ"></textarea>
+        <textarea id="qr-text" rows="3" placeholder="พิมพ์ข้อความ, URL, เบอร์โทร ฯลฯ" aria-describedby="qr-text-info qr-text-error" aria-invalid="false"></textarea>
+        <p id="qr-text-info" class="help-text">ข้อมูล QR: 0 ไบต์ (UTF-8)</p>
+        <p id="qr-text-error" class="field-error" role="status" aria-live="polite" hidden></p>
+        <button id="qr-fix-btn" class="secondary-btn" type="button" hidden></button>
 
         <div class="row">
           <label for="qr-size">ขนาด</label>

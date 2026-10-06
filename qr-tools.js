@@ -9,6 +9,46 @@
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
   const LOGO_RATIOS = Object.freeze([0.30, 0.25, 0.20, 0.15, 0.13, 0.11, 0.09, 0.07]);
   const CAPTION = Object.freeze({ family: 'TH Sarabun New', maxLength: 1000, minSize: 8, maxSize: 96, gap: 8, bottom: 8 });
+  const ECL_ORDER = Object.freeze(['H', 'Q', 'M', 'L']);
+  class QrError extends Error {
+    constructor(code, message) { super(message); this.name = code === 'ABORT' ? 'AbortError' : 'QrError'; this.code = code; }
+  }
+  function assertCurrent(isCurrent) { if (!isCurrent()) throw new QrError('ABORT', 'ยกเลิกการสร้าง QR'); }
+  function levelsFrom(level) {
+    const index = ECL_ORDER.indexOf(level);
+    if (index < 0) throw new QrError('SETTINGS', 'ระดับแก้ไขข้อผิดพลาดไม่ถูกต้อง');
+    return ECL_ORDER.slice(index);
+  }
+  function utf8ByteLength(text) { return new TextEncoder().encode(text).length; }
+  function createQrMatrix(text, level, qr) {
+    levelsFrom(level);
+    if (!qr || typeof qr.create !== 'function') throw new QrError('LIBRARY', 'เครื่องมือสร้าง QR Code ยังโหลดไม่สำเร็จ กรุณาโหลดหน้าใหม่');
+    if (!text) throw new QrError('EMPTY', 'กรุณาพิมพ์ข้อความหรือลิงก์');
+    // Even numeric mode at level L cannot exceed 7,089 characters. Avoid running
+    // the segmentation algorithm on arbitrarily large pasted input; do not truncate it.
+    if (text.length > 7089) throw new QrError('CAPACITY', 'ข้อมูลยาวเกินความจุ QR Code');
+    try { return qr.create(text, { errorCorrectionLevel: level }); }
+    catch (error) {
+      if (/amount of data is too big|data too big/i.test(error.message)) throw new QrError('CAPACITY', 'ข้อมูลยาวเกินความจุระดับ ' + level);
+      throw error;
+    }
+  }
+  function inspectQrCapacity({ text, errorCorrectionLevel, preferredLevel = errorCorrectionLevel, hasLogo = false, qr }) {
+    text = text.trim();
+    const bytes = utf8ByteLength(text);
+    const level = hasLogo ? 'H' : errorCorrectionLevel;
+    if (!text) return { text, bytes, level, empty: true, fits: false, alternatives: [] };
+    function inspect(ecl) {
+      try { return { level: ecl, fits: true, version: createQrMatrix(text, ecl, qr).version }; }
+      catch (error) { if (error.code !== 'CAPACITY') throw error; return { level: ecl, fits: false }; }
+    }
+    const current = inspect(level);
+    if (current.fits) return { text, bytes, ...current, empty: false, alternatives: [] };
+    const levels = ECL_ORDER.map(ecl => ecl === level ? current : inspect(ecl));
+    const order = hasLogo ? levelsFrom(preferredLevel) : levelsFrom(level).slice(1);
+    return { text, bytes, ...current, empty: false, anyLevelFits: levels.some(item => item.fits),
+      alternatives: order.map(ecl => levels.find(item => item.level === ecl)).filter(item => item.fits) };
+  }
 
   function validateCaption({ text = '', fontSize = 24, color = '#000000' } = {}) {
     if (typeof text !== 'string' || text.length > CAPTION.maxLength) throw new Error('ข้อความใต้ QR ต้องไม่เกิน 1,000 ตัวอักษร');
@@ -242,12 +282,9 @@
     return false;
   }
   async function buildQr({ text, size, errorCorrectionLevel, logo, qr, decode, createCanvas, isCurrent = () => true }) {
-    const assertCurrent = () => {
-      if (!isCurrent()) { const error = new Error('ยกเลิกการสร้าง QR'); error.name = 'AbortError'; throw error; }
-    };
-    assertCurrent();
+    assertCurrent(isCurrent);
     const ecl = logo ? 'H' : errorCorrectionLevel;
-    const matrix = qr.create(text, { errorCorrectionLevel: ecl });
+    const matrix = createQrMatrix(text, ecl, qr);
     const base = createCanvas();
     let candidate = null;
     try {
@@ -255,10 +292,10 @@
         width: size, margin: 4, errorCorrectionLevel: ecl, version: matrix.version, maskPattern: matrix.maskPattern,
         color: { dark: '#000000ff', light: '#ffffffff' }
       }, error => error ? reject(error) : resolve()));
-      assertCurrent();
+      assertCurrent(isCurrent);
       if (!logo) {
         const result = readQr(base, decode);
-        if (!result || result.data !== text) throw new Error('ตรวจอ่าน QR ไม่ผ่าน กรุณาเพิ่มขนาด QR หรือลดความยาวข้อความ');
+        if (!result || result.data !== text) throw new QrError('PLAIN_DECODE', 'ตรวจอ่าน QR ไม่ผ่าน กรุณาเพิ่มขนาด QR หรือลดความยาวข้อความ');
         return { canvas: base, logoRatio: null };
       }
       candidate = createCanvas();
@@ -268,8 +305,9 @@
       if (!ctx) throw new Error('ใช้ canvas ไม่ได้');
       const scale = size >= matrix.modules.size + 8 ? size / (matrix.modules.size + 8) : 4;
       const symbolWidth = matrix.modules.size * scale;
+      let visibleTrials = 0;
       for (const ratio of LOGO_RATIOS) {
-        assertCurrent();
+        assertCurrent(isCurrent);
         ctx.drawImage(base, 0, 0);
         const box = Math.max(6, Math.floor(symbolWidth * ratio));
         const pad = Math.max(2, Math.floor(box * 0.08));
@@ -283,13 +321,45 @@
         ctx.drawImage(logo, (base.width - w) / 2, (base.height - h) / 2, w, h);
         restoreFunctionalModules(candidate, base, matrix.modules, size);
         if (!hasVisibleLogo(candidate, matrix.modules, scale, w, h)) continue;
+        visibleTrials++;
         const result = readQr(candidate, decode);
         if (result && result.data === text) { releaseCanvas(base); return { canvas: candidate, logoRatio: ratio }; }
       }
-      throw new Error('QR หลังใส่โลโก้อ่านไม่ผ่าน หรือโลโก้ถูกลายสำคัญบัง กรุณาเพิ่มขนาด QR เปลี่ยนโลโก้ หรือลดความยาวข้อความ');
+      if (!visibleTrials) throw new QrError('LOGO_INVISIBLE', 'โลโก้ไม่มีส่วนที่มองเห็นบนพื้นขาว หรือโลโก้ถูกลายสำคัญบัง กรุณาเปลี่ยนโลโก้');
+      throw new QrError('LOGO_DECODE', 'QR หลังใส่โลโก้อ่านไม่ผ่าน กรุณาเพิ่มขนาด QR เปลี่ยนโลโก้ หรือลดความยาวข้อความ');
     } catch (error) { releaseCanvas(base); releaseCanvas(candidate); throw error; }
   }
-  return { LIMITS, LOGO_RATIOS, CAPTION, validateCaption, loadCaptionFont, layoutCaption, composeQrCaption,
+  async function buildQrImage(options) {
+    const isCurrent = options.isCurrent || (() => true);
+    let base, composed;
+    try {
+      base = await buildQr(options);
+      assertCurrent(isCurrent);
+      composed = composeQrCaption({ canvas: base.canvas, caption: options.caption, createCanvas: options.createCanvas });
+      const checked = readQr(composed.canvas, options.decode);
+      if (!checked || checked.data !== options.text) throw new QrError('FINAL_IMAGE_DECODE', 'ตรวจอ่านภาพรวมไม่ผ่าน กรุณาปรับข้อความใต้ภาพหรือเพิ่มขนาด QR');
+      assertCurrent(isCurrent);
+      return { canvas: composed.canvas, logoRatio: base.logoRatio };
+    } catch (error) { releaseCanvas(composed && composed.canvas); throw error; }
+    finally { releaseCanvas(base && base.canvas); }
+  }
+  async function findPlainAlternative(options, { preferredLevel, skipLevels = [], buildImage = buildQrImage }) {
+    const isCurrent = options.isCurrent || (() => true);
+    for (const level of levelsFrom(preferredLevel).filter(ecl => !skipLevels.includes(ecl))) {
+      assertCurrent(isCurrent);
+      let result;
+      try {
+        result = await buildImage({ ...options, logo: null, errorCorrectionLevel: level });
+        assertCurrent(isCurrent);
+        return { level };
+      } catch (error) {
+        if (!['CAPACITY', 'PLAIN_DECODE', 'FINAL_IMAGE_DECODE'].includes(error.code)) throw error;
+      } finally { releaseCanvas(result && result.canvas); }
+    }
+    return null;
+  }
+  return { LIMITS, LOGO_RATIOS, CAPTION, ECL_ORDER, QrError, utf8ByteLength, createQrMatrix, inspectQrCapacity, buildQrImage, findPlainAlternative,
+    validateCaption, loadCaptionFont, layoutCaption, composeQrCaption,
     validateFile, validateDimensions, fitDimensions, validateImageHeader, loadImageCanvas, releaseCanvas,
     createCameraController, readQr, restoreFunctionalModules, buildQr };
 });
